@@ -71,7 +71,7 @@ async function forwardToA0(msg: PolledMessage): Promise<void> {
   const result = await response.json() as A0ForwardResponse;
 
   // Store context mapping if new context was created
-n  if (result.context_id && !getContextId(msg.contactId, msg.groupId)) {
+if (result.context_id && !getContextId(msg.contactId, msg.groupId)) {
     setContextId(msg.contactId, msg.groupId, result.context_id);
   }
 
