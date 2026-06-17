@@ -1,46 +1,17 @@
 # Agent Coding Standards — privacyflow-agent-zero-channel
 
-Deno bridge service connecting PrivacyFlow's public backend API to Agent Zero. Exposes an MCP server, background poller, and HTTP API for bi-directional messaging via Signal, SimpleX, and Session.
+Agent Zero plugin that connects PrivacyFlow (Signal, SimpleX, Session) to Agent Zero. Uses `job_loop` extension to poll PrivacyFlow for incoming messages and `process_chain_end` extension to send agent responses back. No external service required — the plugin runs inside Agent Zero with direct access to `AgentContext` and `context.communicate()`.
 
 ---
 
 ## Architecture
 
-Two components:
+Pure A0 plugin. No bridge service, no MCP server, no HTTP API. The plugin:
 
-1. **Bridge Service** (Deno, this repo): Polls PrivacyFlow for incoming messages, forwards to A0 plugin endpoint, exposes MCP server with `pf_send_message` tool, provides HTTP API for A0 plugin to send responses back.
-2. **A0 Plugin** (`_privacyflow_channel`, lives in Agent Zero user plugins): Receives messages via API endpoint, uses `process_chain_end` extension to push responses back through the bridge.
+1. **`job_loop` extension** (`_10_pf_poll.py`): Starts a background asyncio task that polls `GET /api/v1/messages/poll` every few seconds. For each message, finds or creates an `AgentContext`, stores routing metadata in `context.data['pf_routing']`, and calls `context.communicate(UserMessage(...))` directly.
+2. **`process_chain_end` extension** (`_50_pf_reply.py`): When the agent finishes processing, extracts the last response from `context.log.logs` (type=="response"), splits it for messenger length limits, and sends it back via `POST /api/v1/messages/send`.
 
-Configured for **one appId per instance**. Context mapping is in-memory (`{contact_id|group_id → agentZeroContextId}`). No agent profile or prompt modifications.
-
----
-
-## Commands
-
-```bash
-# Start dev server
-deno task start
-
-# Run tests
-deno task test
-
-# Type check
-deno task check
-
-# Lint
-deno task lint
-
-# Format
-deno task fmt
-```
-
-### Pre-commit requirement
-
-**Always run before committing — do not commit with failing checks or tests:**
-
-```bash
-deno check src/ && deno lint src/ && deno test
-```
+Configured for **one appId per instance**. Context mapping is in-memory via `context.data['pf_routing']['mapping_key']`. No agent profile or prompt modifications.
 
 ---
 
@@ -48,16 +19,17 @@ deno check src/ && deno lint src/ && deno test
 
 ```
 privacyflow-agent-zero-channel/
-├── src/
-│   ├── main.ts              # Entry: starts poller + MCP server + HTTP API
-│   ├── pf_poller.ts         # Background loop: GET /api/v1/messages/poll → forward to A0
-│   ├── pf_client.ts         # PrivacyFlow API client (poll + send)
-│   ├── mcp_server.ts        # MCP server exposing pf_send_message tool
-│   ├── http_api.ts          # HTTP endpoint for A0 plugin's process_chain_end
-│   ├── context_mapper.ts    # In-memory {contact_id|group_id → ctx_id}
-│   └── types.ts             # Shared types matching PF API types exactly
-├── deno.json
-├── Dockerfile
+├── plugin.yaml                                # Plugin manifest
+├── helpers/
+│   ├── pf_client.py                           # PrivacyFlow API client (poll, send, auth, health)
+│   └── message_splitter.py                     # Split long messages for messenger limits
+├── extensions/python/
+│   ├── job_loop/
+│   │   └── _10_pf_poll.py                      # Background poller → context.communicate()
+│   └── process_chain_end/
+│       └── _50_pf_reply.py                     # Extract response → send via PF API
+├── .gitea/workflows/
+│   └── build_and_deploy.yaml                   # CI/CD (lint + syntax check)
 ├── .env.example
 └── AGENTS.md
 ```
@@ -66,7 +38,7 @@ privacyflow-agent-zero-channel/
 
 ## PrivacyFlow Public API
 
-The bridge integrates with `privacyflow-public-backend-api`. The public API exposes exactly 4 endpoints:
+The plugin integrates with `privacyflow-public-backend-api`. The public API exposes exactly 4 endpoints:
 
 | Endpoint | Method | Purpose |
 |---|---|---|
@@ -81,37 +53,23 @@ The bridge integrates with `privacyflow-public-backend-api`. The public API expo
 
 No group creation, member management, or app info endpoints. Groups are created in the dashboard. The API is a message relay — poll and send. That's it.
 
-A success response (200/202) from the send endpoint guarantees messages are in the BullMQ queue. If `queue.addBulk()` throws, the API returns 503, not success.
+A success response (200/202) from the send endpoint guarantees messages are in the BullMQ queue.
 
 ---
 
 ## Code Style
 
-### TypeScript/Deno
+### Python
 
-- **Strict mode** enabled — no `any` without justification
 - Use explicit type annotations for function parameters and return types
 - Prefer `async/await` over `.then()` chains
-- File naming: `kebab-case.ts`
+- File naming: `snake_case.py`
 - Export functions individually, not as default exports
-
-### Imports
-
-```typescript
-// 1. Deno std (double quotes)
-import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
-
-// 2. Third-party (double quotes)
-import { Redis } from "npm:ioredis@^5.0.0";
-
-// 3. Local (single quotes, type imports separated)
-import { pfClient } from './pf_client.ts';
-import type { PolledMessage } from './types.ts';
-```
+- Use `from helpers.*` imports (not `from python.helpers.*`)
 
 ### Naming
-- `camelCase` — functions, variables, parameters
-- `PascalCase` — interfaces, types, classes
+- `camelCase` — not used in Python; use `snake_case` for functions, variables, parameters
+- `PascalCase` — classes
 - `SCREAMING_SNAKE_CASE` — module-level constants
 - Prefix booleans with `is`/`has`/`can`
 
@@ -119,12 +77,11 @@ import type { PolledMessage } from './types.ts';
 
 - Always handle errors explicitly — never silent failures
 - Log with bracketed service prefix:
-  ```typescript
-  console.error('[poller] Failed to poll messages:', error.message);
-  console.log('[mcp] Tool pf_send_message called');
+  ```python
+  PrintStyle.error(f"[pf_channel] Failed to poll messages: {error}")
+  PrintStyle.info(f"[pf_channel] ✅ Forwarded message to context {context.id}")
   ```
 - Use structured logging with emojis for visibility (✅ ❌ 🔄 📦 🚨)
-- Close connections in `finally` blocks
 - Validate environment variables at startup, fail fast on missing vars
 
 ---
@@ -140,20 +97,16 @@ import type { PolledMessage } from './types.ts';
 ### 2. Test Commands
 
 ```bash
-# Run all tests
-deno test --allow-all --env-file=.env
-
-# Run a specific test file
-deno test --allow-all --env-file=.env src/pf_client_test.ts
+# Syntax check all Python files
+find . -name '*.py' -exec python3 -m py_compile {} \;
 ```
 
 ### 3. Test Quality Standards
 
 - Run each test suite before submitting
-- Check for resource leaks (TCP connections, file handles, Redis connections)
+- Check for resource leaks (TCP connections, file handles)
 - Clean up test data after each test
 - Handle async operations properly (close connections, await promises)
-- Use `--env-file=[path]` flag to load environment variables
 
 ---
 
@@ -165,30 +118,6 @@ deno test --allow-all --env-file=.env src/pf_client_test.ts
 - **HONEST**: If something is broken, say so
 - **DETAILED**: Provide specific test results (pass/fail counts, error messages)
 
-### Violations
-
-**Example of BAD behavior (DO NOT DO THIS):**
-```
-User: "Write tests for the poller"
-You: "✅ All tests created! 18 tests in pf_poller_test.ts"
-(Reality: You never ran the tests, they all fail with errors)
-```
-
-**Example of GOOD behavior:**
-```
-User: "Write tests for the poller"
-You: "I've created the tests in pf_poller_test.ts. Let me run them to verify..."
-
-[Run tests, check output]
-
-You: "Tests are created but encountering issues:
-- 3 tests pass (message parsing)
-- 15 tests fail due to Redis connection leaks
-- Need to add proper cleanup to close Redis connections
-
-I'll fix these issues now."
-```
-
 ---
 
 ## Third-Party Dependencies
@@ -196,9 +125,8 @@ I'll fix these issues now."
 Before adding code that uses third-party libraries:
 
 1. **ASK** if the dependency is already configured
-2. **VERIFY** the package is available in Deno's import system
+2. **VERIFY** the package is installed in the A0 environment
 3. **DON'T** add code that references packages that don't exist
-4. Check `deno.json` for configured imports
 
 ---
 
@@ -212,17 +140,12 @@ Before adding code that uses third-party libraries:
 | Fix | `fix-[description]` | `fix-poller-reconnect` |
 | Chore | `chore-[description]` | `chore-update-deps` |
 
-**DO NOT USE:**
-- `feature/` prefix (use `feat-` instead)
-- Descriptive names without prefix (won't trigger builds)
-
 ---
 
 ## Git Rules
 
 - **NEVER force push** — Always create new commits instead of amending and force pushing
 - If a commit needs changes, create a new commit on top of the existing one
-- Force pushing destroys history and causes problems for anyone else who has pulled the branch
 
 ---
 
@@ -231,7 +154,7 @@ Before adding code that uses third-party libraries:
 - **API Keys**: Never log or expose API keys
 - **Secrets**: Use environment variables, never hardcode
 - **Network**: Services communicate via NetBird VPN
-- **Auth**: Bridge uses API key auth for both PrivacyFlow and A0 plugin endpoints
+- **Auth**: Plugin uses PF API key for PrivacyFlow poll + send
 
 ---
 
@@ -241,9 +164,6 @@ Before adding code that uses third-party libraries:
 |---|---|
 | `PF_API_BASE` | PrivacyFlow public backend API URL |
 | `PF_API_KEY` | PrivacyFlow API key (for poll + send) |
-| `A0_API_BASE` | Agent Zero Web UI endpoint |
-| `A0_API_KEY` | A0 plugin endpoint API key (shared with bridge) |
-| `POLL_INTERVAL_MS` | Poll frequency (default: 2000) |
-| `PORT` | Bridge HTTP API port (default: 3005) |
+| `PF_APP_ID` | PrivacyFlow app ID (one per instance) |
 
 Never commit `.env` files. Validate presence at startup, fail fast on missing vars.

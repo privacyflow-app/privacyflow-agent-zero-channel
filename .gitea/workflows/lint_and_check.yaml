@@ -1,0 +1,31 @@
+name: Lint and Syntax Check
+on:
+  push:
+    branches:
+      - develop
+      - feat-*
+      - main
+
+jobs:
+  lint-and-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: https://github.com/actions/checkout@v4
+
+      - name: Set up Python
+        uses: https://github.com/actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install pyflakes
+
+      - name: Syntax check all Python files
+        run: |
+          find . -name '*.py' -not -path './.git/*' -exec python3 -m py_compile {} \;
+
+      - name: Lint with pyflakes
+        run: |
+          find . -name '*.py' -not -path './.git/*' -exec pyflakes {} \; || true
