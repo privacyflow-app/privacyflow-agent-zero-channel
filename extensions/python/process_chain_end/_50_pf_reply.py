@@ -14,8 +14,8 @@ from helpers.print_style import PrintStyle
 from helpers.errors import format_error
 from agent import AgentContext
 
-from plugins._privacyflow_channel.helpers.pf_client import send_message
-from plugins._privacyflow_channel.helpers.message_splitter import split_message
+from plugins.privacyflow_channel.helpers.pf_client import send_message
+from plugins.privacyflow_channel.helpers.message_splitter import split_message
 
 
 def _extract_last_response(context: AgentContext) -> str:

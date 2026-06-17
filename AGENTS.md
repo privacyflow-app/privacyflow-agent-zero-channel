@@ -19,7 +19,10 @@ Configured for **one appId per instance**. Context mapping is in-memory via `con
 
 ```
 privacyflow-agent-zero-channel/
-├── plugin.yaml                                # Plugin manifest
+├── plugin.yaml                                # Plugin manifest (A0 runtime)
+├── index.yaml                                 # Plugin index metadata (a0-plugins)
+├── README.md
+├── LICENSE
 ├── helpers/
 │   ├── pf_client.py                           # PrivacyFlow API client (poll, send, auth, health)
 │   └── message_splitter.py                     # Split long messages for messenger limits
@@ -29,7 +32,7 @@ privacyflow-agent-zero-channel/
 │   └── process_chain_end/
 │       └── _50_pf_reply.py                     # Extract response → send via PF API
 ├── .gitea/workflows/
-│   └── build_and_deploy.yaml                   # CI/CD (lint + syntax check)
+│   └── lint_and_check.yaml                     # CI/CD (lint + syntax check)
 ├── .env.example
 └── AGENTS.md
 ```

@@ -15,7 +15,7 @@ from helpers.print_style import PrintStyle
 from helpers.errors import format_error
 from agent import AgentContext, UserMessage
 
-from plugins._privacyflow_channel.helpers.pf_client import poll_messages
+from plugins.privacyflow_channel.helpers.pf_client import poll_messages
 
 
 POLL_INTERVAL_SEC = 3

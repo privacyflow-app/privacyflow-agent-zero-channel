@@ -5,6 +5,10 @@ on:
       - develop
       - feat-*
       - main
+  pull_request:
+    branches:
+      - develop
+      - main
 
 jobs:
   lint-and-check:

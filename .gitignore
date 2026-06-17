@@ -1,5 +1,3 @@
 .env
 *.log
-deno.lock
-node_modules/
-dist/
+__pycache__/
