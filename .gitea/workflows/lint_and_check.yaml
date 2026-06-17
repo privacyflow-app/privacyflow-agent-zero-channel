@@ -1,0 +1,47 @@
+name: Lint and Syntax Check
+on:
+  push:
+    branches:
+      - develop
+      - feat-*
+      - main
+  pull_request:
+    branches:
+      - develop
+      - main
+
+jobs:
+  lint-and-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: https://github.com/actions/checkout@v4
+
+      - name: Set up Python
+        uses: https://github.com/actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install pyflakes
+          echo "✅ Dependencies installed"
+
+      - name: Syntax check all Python files
+        run: |
+          echo "Checking Python syntax..."
+          PY_FILES=$(find . -name '*.py' -not -path './.git/*')
+          FILE_COUNT=$(echo "$PY_FILES" | wc -l)
+          echo "Found $FILE_COUNT Python file(s)"
+          echo "$PY_FILES"
+          echo "$PY_FILES" | xargs -I{} python3 -m py_compile {}
+          echo "✅ All $FILE_COUNT file(s) passed syntax check"
+
+      - name: Lint with pyflakes
+        run: |
+          echo "Running pyflakes lint..."
+          find . -name '*.py' -not -path './.git/*' -exec pyflakes {} \; && {
+            echo "✅ No lint issues found"
+          } || {
+            echo "⚠️ Lint issues found (non-blocking)"
+          }

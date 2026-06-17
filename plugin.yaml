@@ -1,0 +1,13 @@
+name: privacyflow_channel
+title: PrivacyFlow Channel
+description: Bi-directional channel connecting PrivacyFlow (Signal, SimpleX, Session) to Agent Zero. Polls PrivacyFlow for incoming messages and sends agent responses back.
+version: 0.1.0
+tags:
+  - communication
+  - integration
+  - automation
+  - messaging
+settings_sections:
+  - external
+per_project_config: false
+per_agent_config: false
