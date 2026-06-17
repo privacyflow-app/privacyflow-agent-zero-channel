@@ -18,10 +18,24 @@ from plugins.privacyflow_channel.helpers.pf_client import send_message
 from plugins.privacyflow_channel.helpers.message_splitter import split_message
 
 
+def _get_logs_safe(context: AgentContext) -> list:
+    """Get a thread-safe snapshot of context log entries.
+
+    Prefers a public API if available, falls back to the internal lock.
+    TODO: Replace with public thread-safe log accessor when A0 framework provides one.
+    """
+    log = context.log
+    if hasattr(log, "get_logs") and callable(log.get_logs):
+        return log.get_logs()
+    if hasattr(log, "snapshot") and callable(log.snapshot):
+        return log.snapshot()
+    with log._lock:
+        return list(log.logs)
+
+
 def _extract_last_response(context: AgentContext) -> str:
     """Extract the last response from context log entries."""
-    with context.log._lock:
-        logs = list(context.log.logs)
+    logs = _get_logs_safe(context)
     if not logs:
         return ""
     for item in reversed(logs):
