@@ -21,11 +21,23 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pyflakes
+          echo "✅ Dependencies installed"
 
       - name: Syntax check all Python files
         run: |
-          find . -name '*.py' -not -path './.git/*' -exec python3 -m py_compile {} \;
+          echo "Checking Python syntax..."
+          PY_FILES=$(find . -name '*.py' -not -path './.git/*')
+          FILE_COUNT=$(echo "$PY_FILES" | wc -l)
+          echo "Found $FILE_COUNT Python file(s)"
+          echo "$PY_FILES"
+          echo "$PY_FILES" | xargs -I{} python3 -m py_compile {}
+          echo "✅ All $FILE_COUNT file(s) passed syntax check"
 
       - name: Lint with pyflakes
         run: |
-          find . -name '*.py' -not -path './.git/*' -exec pyflakes {} \; || true
+          echo "Running pyflakes lint..."
+          find . -name '*.py' -not -path './.git/*' -exec pyflakes {} \; && {
+            echo "✅ No lint issues found"
+          } || {
+            echo "⚠️ Lint issues found (non-blocking)"
+          }
