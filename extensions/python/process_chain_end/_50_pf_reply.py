@@ -29,6 +29,7 @@ def _get_logs_safe(context: AgentContext) -> list:
         return log.get_logs()
     if hasattr(log, "snapshot") and callable(log.snapshot):
         return log.snapshot()
+    PrintStyle.debug("[pf_reply] Falling back to context.log._lock for log access")
     with log._lock:
         return list(log.logs)
 

@@ -52,4 +52,4 @@ MIT — see [LICENSE](./LICENSE).
 
 ## a0-plugins Index Submission
 
-This plugin is designed for submission to the [a0-plugins](https://github.com/agent0ai/a0-plugins) community index. The `index.yaml` in this repo points to a **GitHub mirror** of this repository, as the a0-plugins CI validator requires a GitHub-hosted repo with `plugin.yaml` at its root. The source of truth lives on Gitea; the GitHub mirror must be created and kept in sync before submitting the index PR.
+This plugin is designed for submission to the [a0-plugins](https://github.com/agent0ai/a0-plugins) community index. See the [a0-plugins README](https://github.com/agent0ai/a0-plugins#submitting-a-plugin-pull-request) for submission rules and the [index.yaml format spec](https://github.com/agent0ai/a0-plugins#indexyaml-format). The `index.yaml` in this repo points to a **GitHub mirror** of this repository, as the a0-plugins CI validator requires a GitHub-hosted repo with `plugin.yaml` at its root. The source of truth lives on Gitea; the GitHub mirror must be created and kept in sync before submitting the index PR.
