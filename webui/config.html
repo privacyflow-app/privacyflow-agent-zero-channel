@@ -1,0 +1,71 @@
+<html>
+<head>
+    <title>PrivacyFlow Channel Configuration</title>
+</head>
+
+<body>
+    <div x-data>
+        <template x-if="config">
+            <div>
+                <div class="section-title">PrivacyFlow Channel</div>
+                <div class="section-description">
+                    Bi-directional channel connecting PrivacyFlow (Signal, SimpleX, Session) to Agent Zero.
+                    Configure your PrivacyFlow API credentials below to enable message polling and replies.
+                </div>
+
+                <div class="field">
+                    <div class="field-label">
+                        <div class="field-title">API Base URL</div>
+                        <div class="field-description">
+                            The base URL of your PrivacyFlow backend API.
+                            Example: <code>http://localhost:3004</code> or <code>https://api.privacyflow.tech</code>
+                        </div>
+                    </div>
+                    <div class="field-control">
+                        <input type="text"
+                               x-model="config.pf_api_base"
+                               placeholder="http://localhost:3004" />
+                    </div>
+                </div>
+
+                <div class="field">
+                    <div class="field-label">
+                        <div class="field-title">API Key</div>
+                        <div class="field-description">
+                            Your PrivacyFlow API key used for authentication.
+                            Generate this from your PrivacyFlow dashboard under App Settings.
+                        </div>
+                    </div>
+                    <div class="field-control">
+                        <input type="password"
+                               x-model="config.pf_api_key"
+                               placeholder="pf_xxxxxxxxxxxxxxxxxxxx" />
+                    </div>
+                </div>
+
+                <div class="field">
+                    <div class="field-label">
+                        <div class="field-title">App ID</div>
+                        <div class="field-description">
+                            Your PrivacyFlow App ID. This identifies which app receives incoming messages
+                            and where outgoing messages are sent from.
+                        </div>
+                    </div>
+                    <div class="field-control">
+                        <input type="text"
+                               x-model="config.pf_app_id"
+                               placeholder="your_privacyflow_app_id" />
+                    </div>
+                </div>
+
+                <div class="section-description" style="margin-top: 1rem; opacity: 0.7;">
+                    <strong>Note:</strong> These values are stored as plugin configuration and injected as
+                    environment variables (<code>PF_API_BASE</code>, <code>PF_API_KEY</code>, <code>PF_APP_ID</code>)
+                    when the plugin runs. You can also set them directly in your
+                    <strong>Settings &rarr; Secrets</strong> or <code>.env</code> file.
+                </div>
+            </div>
+        </template>
+    </div>
+</body>
+</html>

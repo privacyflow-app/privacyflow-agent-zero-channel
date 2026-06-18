@@ -6,27 +6,50 @@ Wraps the 4 endpoints from privacyflow-public-backend-api:
 - GET  /api/v1/auth/verify
 - GET  /api/v1/messages/poll
 - POST /api/v1/messages/send
+
+Reads credentials from A0 plugin config (config.json) with env var fallback.
 """
 
 import os
 import requests
 from typing import Optional
 
+from helpers import plugins
+
+
+PLUGIN_NAME = "privacyflow_channel"
+
+
+def _get_config() -> dict:
+    """Read plugin config, falling back to env vars."""
+    config = plugins.get_plugin_config(PLUGIN_NAME) or {}
+    return {
+        "pf_api_base": config.get("pf_api_base") or os.getenv("PF_API_BASE", ""),
+        "pf_api_key": config.get("pf_api_key") or os.getenv("PF_API_KEY", ""),
+        "pf_app_id": config.get("pf_app_id") or os.getenv("PF_APP_ID", ""),
+    }
+
 
 def _get_base_url() -> str:
-    return os.getenv("PF_API_BASE", "").rstrip("/")
+    return _get_config()["pf_api_base"].rstrip("/")
 
 
 def _get_api_key() -> str:
-    return os.getenv("PF_API_KEY", "")
+    return _get_config()["pf_api_key"]
 
 
 def _get_app_id() -> str:
-    return os.getenv("PF_APP_ID", "")
+    return _get_config()["pf_app_id"]
 
 
 def _get_headers() -> dict:
     return {"Authorization": f"Bearer {_get_api_key()}"}
+
+
+def is_configured() -> bool:
+    """Check if all required credentials are present."""
+    cfg = _get_config()
+    return bool(cfg["pf_api_base"] and cfg["pf_api_key"])
 
 
 def health_check() -> bool:

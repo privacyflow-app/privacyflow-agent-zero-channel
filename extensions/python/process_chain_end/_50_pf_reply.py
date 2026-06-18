@@ -7,6 +7,8 @@ and sends it back to PrivacyFlow via the send API.
 """
 
 import asyncio
+import importlib.util
+import os
 from typing import Any
 
 from helpers.extension import Extension
@@ -14,8 +16,23 @@ from helpers.print_style import PrintStyle
 from helpers.errors import format_error
 from agent import AgentContext
 
-from plugins.privacyflow_channel.helpers.pf_client import send_message
-from plugins.privacyflow_channel.helpers.message_splitter import split_message
+
+# Load helpers via importlib since user plugins can't use `from plugins.*` imports
+_PLUGIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+
+
+def _load_helper(name: str):
+    path = os.path.join(_PLUGIN_DIR, "helpers", f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"privacyflow_channel.helpers.{name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_pf_client = _load_helper("pf_client")
+_message_splitter = _load_helper("message_splitter")
+send_message = _pf_client.send_message
+split_message = _message_splitter.split_message
 
 
 def _get_logs_safe(context: AgentContext) -> list:
