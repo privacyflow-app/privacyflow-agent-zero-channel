@@ -7,6 +7,7 @@ forwards them to the appropriate Agent Zero context.
 """
 
 import asyncio
+import importlib.util
 import os
 from typing import Any
 
@@ -15,7 +16,22 @@ from helpers.print_style import PrintStyle
 from helpers.errors import format_error
 from agent import AgentContext, UserMessage
 
-from plugins.privacyflow_channel.helpers.pf_client import poll_messages
+
+# Load helpers via importlib since user plugins can't use `from plugins.*` imports
+_PLUGIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+
+
+def _load_helper(name: str):
+    path = os.path.join(_PLUGIN_DIR, "helpers", f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"privacyflow_channel.helpers.{name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_pf_client = _load_helper("pf_client")
+poll_messages = _pf_client.poll_messages
+is_configured = _pf_client.is_configured
 
 
 POLL_INTERVAL_SEC = 3
@@ -112,8 +128,8 @@ class PfPoller(Extension):
     async def execute(self, **kwargs: Any) -> None:
         global _poll_task
 
-        # Don't start if env vars not configured
-        if not os.getenv("PF_API_BASE") or not os.getenv("PF_API_KEY"):
+        # Don't start if not configured
+        if not is_configured():
             return
 
         # Start poll task if not running or dead
