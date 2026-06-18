@@ -4,16 +4,30 @@ PrivacyFlow Channel Poller
 Runs as a background asyncio task started from job_loop.
 Polls PrivacyFlow for incoming messages every few seconds,
 forwards them to the appropriate Agent Zero context.
+
+Key design (mirrors _telegram_integration patterns):
+- Persists context mappings to a JSON state file so the same chat is reused
+  across polls and A0 restarts (no new chat per message).
+- Calls mq.log_user_message() before context.communicate() so the incoming
+  message text is visible in the A0 UI.
+- Calls save_tmp_chat() after dispatching so the chat persists.
+- Gives each context a human-readable name like 'PF: signal <contactId>'.
 """
 
 import asyncio
 import importlib.util
+import json
 import os
+import threading
+import uuid
 from typing import Any
 
 from helpers.extension import Extension
 from helpers.print_style import PrintStyle
 from helpers.errors import format_error
+from helpers import files
+from helpers import message_queue as mq
+from helpers.persist_chat import save_tmp_chat
 from agent import AgentContext, UserMessage
 
 
@@ -37,6 +51,28 @@ is_configured = _pf_client.is_configured
 POLL_INTERVAL_SEC = 3
 _poll_task: asyncio.Task | None = None
 
+# State persistence: mapping_key -> context_id
+_STATE_FILE = "usr/plugins/privacyflow_channel/state.json"
+_state_lock = threading.Lock()
+
+
+def _load_state() -> dict:
+    """Load persisted state (context mappings)."""
+    path = files.get_abs_path(_STATE_FILE)
+    if os.path.isfile(path):
+        try:
+            return json.loads(files.read_file(path))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_state(state: dict):
+    """Persist state (context mappings)."""
+    path = files.get_abs_path(_STATE_FILE)
+    files.make_dirs(path)
+    files.write_file(path, json.dumps(state))
+
 
 def _format_message_text(msg: dict) -> str:
     """Format message text. Prefix group messages with [contactId]."""
@@ -45,32 +81,55 @@ def _format_message_text(msg: dict) -> str:
     return msg.get("content", "")
 
 
-def _find_context_by_mapping_key(mapping_key: str) -> AgentContext | None:
-    """Find existing context by PF routing mapping key."""
-    for ctx in AgentContext.all():
-        pf_routing = ctx.data.get("pf_routing")
-        if pf_routing and pf_routing.get("mapping_key") == mapping_key:
-            return ctx
-    return None
-
-
 def _get_or_create_context(msg: dict) -> AgentContext:
-    """Get existing context or create new one for this contact/group."""
+    """Get existing context or create new one for this contact/group.
+
+    Uses a JSON state file to persist mapping_key -> context_id so the same
+    chat is reused across polls and A0 restarts.
+    """
     contact_id = msg.get("contactId", "")
     group_id = msg.get("groupId")
+    messenger = msg.get("messenger", "")
     mapping_key = group_id if group_id else contact_id
 
-    context = _find_context_by_mapping_key(mapping_key)
-    if context:
-        return context
+    with _state_lock:
+        state = _load_state()
+        chats = state.setdefault("chats", {})
+        ctx_id = chats.get(mapping_key)
 
-    from initialize import initialize_agent
-    context = AgentContext(
-        config=initialize_agent(),
-        set_current=False,
-    )
-    PrintStyle.info(f"[pf_channel] Created new context {context.id} for {mapping_key}")
-    return context
+        # Check if existing context is still alive
+        if ctx_id:
+            ctx = AgentContext.get(ctx_id)
+            if ctx:
+                return ctx
+            # Context was garbage collected, remove stale mapping
+            chats.pop(mapping_key, None)
+
+        # Create new context
+        from initialize import initialize_agent
+        display_name = f"{messenger} {contact_id[:8]}" if contact_id else mapping_key[:12]
+        ctx = AgentContext(
+            config=initialize_agent(),
+            name=f"PF: {display_name}",
+            set_current=False,
+        )
+
+        # Store routing metadata on context
+        ctx.data["pf_routing"] = {
+            "contact_id": contact_id,
+            "group_id": group_id,
+            "messenger": messenger,
+            "mapping_key": mapping_key,
+        }
+
+        chats[mapping_key] = ctx.id
+        _save_state(state)
+
+        PrintStyle.success(
+            f"[pf_channel] New chat {ctx.id} for {display_name} "
+            f"({'group' if group_id else 'DM'})"
+        )
+        return ctx
 
 
 async def _poll_loop() -> None:
@@ -94,10 +153,10 @@ async def _poll_loop() -> None:
                 if not contact_id or not messenger:
                     continue
 
-                # Get or create context
+                # Get or create context (persisted across polls)
                 context = _get_or_create_context(msg)
 
-                # Store routing metadata
+                # Update routing metadata (in case context was reused)
                 mapping_key = group_id if group_id else contact_id
                 context.data["pf_routing"] = {
                     "contact_id": contact_id,
@@ -106,10 +165,22 @@ async def _poll_loop() -> None:
                     "mapping_key": mapping_key,
                 }
 
-                # Send message to agent
+                # Log incoming message to UI so it's visible in the chat
                 text = _format_message_text(msg)
-                user_msg = UserMessage(message=text, id=msg.get("messageId", ""))
-                context.communicate(user_msg)
+                msg_id = str(uuid.uuid4())
+                mq.log_user_message(
+                    context,
+                    text,
+                    [],
+                    message_id=msg_id,
+                    source=f" ({messenger})",
+                )
+
+                # Dispatch to agent
+                context.communicate(UserMessage(message=text, id=msg_id))
+
+                # Persist chat so it survives restarts
+                save_tmp_chat(context)
 
                 PrintStyle.info(
                     f"[pf_channel] ✅ Forwarded message from {messenger} "
