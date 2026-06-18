@@ -135,10 +135,10 @@ def _get_or_create_context(msg: dict) -> AgentContext:
 async def _dispatch_message(msg: dict) -> None:
     """Process a single incoming message concurrently.
 
-    A0's context.communicate() has internal locking per context, so if the
-    agent is still processing a previous message on the same context, this
-    will wait for the lock and then process — effectively queuing messages
-    per contact/group without blocking the poll loop.
+    Graceful steering: if the agent is already processing a message on this
+    context, the new message is stored and the current response will be
+    discarded (see _50_pf_reply.py). The new message is dispatched after the
+    current processing finishes naturally — no kill, no interrupt.
     """
     try:
         contact_id = msg.get("contactId", "")
@@ -171,7 +171,20 @@ async def _dispatch_message(msg: dict) -> None:
             source=f" ({messenger})",
         )
 
-        # Dispatch to agent (may block if agent is busy on same context)
+        # Graceful steering: if agent is busy, store message for later dispatch
+        if context.is_running():
+            context.data["pf_steer"] = True
+            context.data["pf_steer_msg"] = {
+                "text": text,
+                "msg_id": msg_id,
+            }
+            PrintStyle.info(
+                f"[pf_channel] 🔄 Steered: agent busy, will discard current "
+                f"response and process new message from {messenger}"
+            )
+            return
+
+        # Agent is idle — dispatch normally
         context.communicate(UserMessage(message=text, id=msg_id))
 
         # Persist chat so it survives restarts
