@@ -132,8 +132,66 @@ def _get_or_create_context(msg: dict) -> AgentContext:
         return ctx
 
 
+async def _dispatch_message(msg: dict) -> None:
+    """Process a single incoming message concurrently.
+
+    A0's context.communicate() has internal locking per context, so if the
+    agent is still processing a previous message on the same context, this
+    will wait for the lock and then process — effectively queuing messages
+    per contact/group without blocking the poll loop.
+    """
+    try:
+        contact_id = msg.get("contactId", "")
+        group_id = msg.get("groupId")
+        messenger = msg.get("messenger", "")
+
+        if not contact_id or not messenger:
+            return
+
+        # Get or create context (persisted across polls)
+        context = _get_or_create_context(msg)
+
+        # Update routing metadata (in case context was reused)
+        mapping_key = group_id if group_id else contact_id
+        context.data["pf_routing"] = {
+            "contact_id": contact_id,
+            "group_id": group_id,
+            "messenger": messenger,
+            "mapping_key": mapping_key,
+        }
+
+        # Log incoming message to UI so it's visible in the chat
+        text = _format_message_text(msg)
+        msg_id = str(uuid.uuid4())
+        mq.log_user_message(
+            context,
+            text,
+            [],
+            message_id=msg_id,
+            source=f" ({messenger})",
+        )
+
+        # Dispatch to agent (may block if agent is busy on same context)
+        context.communicate(UserMessage(message=text, id=msg_id))
+
+        # Persist chat so it survives restarts
+        save_tmp_chat(context)
+
+        PrintStyle.info(
+            f"[pf_channel] ✅ Forwarded message from {messenger} "
+            f"→ context {context.id} ({'group' if group_id else 'DM'})"
+        )
+    except Exception as e:
+        PrintStyle.error(f"[pf_channel] ❌ Dispatch failed: {format_error(e)}")
+
+
 async def _poll_loop() -> None:
-    """Background poll loop. Runs until cancelled."""
+    """Background poll loop. Runs until cancelled.
+
+    Each incoming message is dispatched as a separate asyncio task so the
+    poll loop never blocks on agent processing. Messages for the same
+    context are naturally queued by A0's internal context locking.
+    """
     PrintStyle.info(f"[pf_channel] 🔄 Poller started (interval: {POLL_INTERVAL_SEC}s)")
 
     while True:
@@ -146,46 +204,8 @@ async def _poll_loop() -> None:
                 if msg.get("isCommand"):
                     continue
 
-                contact_id = msg.get("contactId", "")
-                group_id = msg.get("groupId")
-                messenger = msg.get("messenger", "")
-
-                if not contact_id or not messenger:
-                    continue
-
-                # Get or create context (persisted across polls)
-                context = _get_or_create_context(msg)
-
-                # Update routing metadata (in case context was reused)
-                mapping_key = group_id if group_id else contact_id
-                context.data["pf_routing"] = {
-                    "contact_id": contact_id,
-                    "group_id": group_id,
-                    "messenger": messenger,
-                    "mapping_key": mapping_key,
-                }
-
-                # Log incoming message to UI so it's visible in the chat
-                text = _format_message_text(msg)
-                msg_id = str(uuid.uuid4())
-                mq.log_user_message(
-                    context,
-                    text,
-                    [],
-                    message_id=msg_id,
-                    source=f" ({messenger})",
-                )
-
-                # Dispatch to agent
-                context.communicate(UserMessage(message=text, id=msg_id))
-
-                # Persist chat so it survives restarts
-                save_tmp_chat(context)
-
-                PrintStyle.info(
-                    f"[pf_channel] ✅ Forwarded message from {messenger} "
-                    f"→ context {context.id} ({'group' if group_id else 'DM'})"
-                )
+                # Dispatch concurrently — don't block the poll loop
+                asyncio.create_task(_dispatch_message(msg))
 
         except Exception as e:
             PrintStyle.error(f"[pf_channel] ❌ Poll failed: {format_error(e)}")
