@@ -12,6 +12,12 @@ Key design (mirrors _telegram_integration patterns):
   message text is visible in the A0 UI.
 - Calls save_tmp_chat() after dispatching so the chat persists.
 - Gives each context a human-readable name like 'PF: signal <contactId>'.
+- Graceful steering with queue: if agent is busy, messages are queued.
+  When agent finishes, the stale response is discarded and the most recent
+  queued message is dispatched. Older queued messages are already visible
+  in the UI via mq.log_user_message().
+- Per-context asyncio lock prevents race conditions where multiple
+  dispatch tasks see is_running() as False simultaneously.
 """
 
 import asyncio
@@ -50,6 +56,9 @@ is_configured = _pf_client.is_configured
 
 POLL_INTERVAL_SEC = 3
 _poll_task: asyncio.Task | None = None
+
+# Per-context dispatch locks: mapping_key -> asyncio.Lock
+_dispatch_locks: dict[str, asyncio.Lock] = {}
 
 # State persistence: mapping_key -> context_id
 _STATE_FILE = "usr/plugins/privacyflow_channel/state.json"
@@ -107,6 +116,18 @@ def _format_message_text(msg: dict) -> str:
     return msg.get("content", "")
 
 
+def _get_dispatch_lock(mapping_key: str) -> asyncio.Lock:
+    """Get or create an asyncio lock for a mapping_key.
+
+    This prevents race conditions where multiple dispatch tasks for the same
+    context check is_running() simultaneously before the first one calls
+    communicate().
+    """
+    if mapping_key not in _dispatch_locks:
+        _dispatch_locks[mapping_key] = asyncio.Lock()
+    return _dispatch_locks[mapping_key]
+
+
 def _get_or_create_context(msg: dict) -> AgentContext:
     """Get existing context or create new one for this contact/group.
 
@@ -130,7 +151,6 @@ def _get_or_create_context(msg: dict) -> AgentContext:
                 return ctx
 
             # Context not in memory — try lazy-loading from disk
-            # (load_tmp_chats may have missed it, or it was GC'd)
             ctx = _try_load_chat_from_disk(ctx_id)
             if ctx:
                 PrintStyle.info(f"[pf_channel] 📂 Lazy-loaded context {ctx_id} from disk")
@@ -167,12 +187,17 @@ def _get_or_create_context(msg: dict) -> AgentContext:
 
 
 async def _dispatch_message(msg: dict) -> None:
-    """Process a single incoming message concurrently.
+    """Process a single incoming message.
 
-    Graceful steering: if the agent is already processing a message on this
-    context, the new message is stored and the current response will be
-    discarded (see _50_pf_reply.py). The new message is dispatched after the
-    current processing finishes naturally — no kill, no interrupt.
+    Uses a per-context asyncio lock to prevent race conditions where
+    multiple dispatch tasks check is_running() simultaneously.
+
+    Graceful steering with queue: if the agent is already processing a
+    message on this context, the new message is appended to a queue
+    (pf_steer_queue). When the agent finishes, the stale response is
+    discarded and the most recent queued message is dispatched.
+    Older queued messages are already visible in the UI via
+    mq.log_user_message().
     """
     try:
         contact_id = msg.get("contactId", "")
@@ -182,11 +207,12 @@ async def _dispatch_message(msg: dict) -> None:
         if not contact_id or not messenger:
             return
 
+        mapping_key = group_id if group_id else contact_id
+
         # Get or create context (persisted across polls)
         context = _get_or_create_context(msg)
 
         # Update routing metadata (in case context was reused)
-        mapping_key = group_id if group_id else contact_id
         context.data["pf_routing"] = {
             "contact_id": contact_id,
             "group_id": group_id,
@@ -205,29 +231,33 @@ async def _dispatch_message(msg: dict) -> None:
             source=f" ({messenger})",
         )
 
-        # Graceful steering: if agent is busy, store message for later dispatch
-        if context.is_running():
-            context.data["pf_steer"] = True
-            context.data["pf_steer_msg"] = {
-                "text": text,
-                "msg_id": msg_id,
-            }
+        # Use per-context lock to prevent race conditions
+        lock = _get_dispatch_lock(mapping_key)
+        async with lock:
+            # Graceful steering: if agent is busy, queue the message
+            if context.is_running():
+                queue = context.data.setdefault("pf_steer_queue", [])
+                queue.append({
+                    "text": text,
+                    "msg_id": msg_id,
+                    "messenger": messenger,
+                })
+                PrintStyle.info(
+                    f"[pf_channel] 🔄 Queued message from {messenger} "
+                    f"(queue depth: {len(queue)})"
+                )
+                return
+
+            # Agent is idle — dispatch normally
+            context.communicate(UserMessage(message=text, id=msg_id))
+
+            # Persist chat so it survives restarts
+            save_tmp_chat(context)
+
             PrintStyle.info(
-                f"[pf_channel] 🔄 Steered: agent busy, will discard current "
-                f"response and process new message from {messenger}"
+                f"[pf_channel] ✅ Forwarded message from {messenger} "
+                f"→ context {context.id} ({'group' if group_id else 'DM'})"
             )
-            return
-
-        # Agent is idle — dispatch normally
-        context.communicate(UserMessage(message=text, id=msg_id))
-
-        # Persist chat so it survives restarts
-        save_tmp_chat(context)
-
-        PrintStyle.info(
-            f"[pf_channel] ✅ Forwarded message from {messenger} "
-            f"→ context {context.id} ({'group' if group_id else 'DM'})"
-        )
     except Exception as e:
         PrintStyle.error(f"[pf_channel] ❌ Dispatch failed: {format_error(e)}")
 
@@ -237,7 +267,7 @@ async def _poll_loop() -> None:
 
     Each incoming message is dispatched as a separate asyncio task so the
     poll loop never blocks on agent processing. Messages for the same
-    context are naturally queued by A0's internal context locking.
+    context are serialized by per-context asyncio locks.
     """
     PrintStyle.info(f"[pf_channel] 🔄 Poller started (interval: {POLL_INTERVAL_SEC}s)")
 

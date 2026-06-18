@@ -84,26 +84,28 @@ class PfAutoReply(Extension):
 
         PrintStyle.info(f"[pf_reply] 📤 Processing reply for {pf_routing.get('messenger', '?')} → {pf_routing.get('contact_id', '?')}")
 
-        # Graceful steering: discard response and dispatch stored message
-        if context.data.get("pf_steer"):
-            steer_msg = context.data.pop("pf_steer_msg", None)
-            context.data.pop("pf_steer", None)
+        # Graceful steering: discard response and dispatch most recent queued message
+        steer_queue = context.data.get("pf_steer_queue", [])
+        if steer_queue:
+            # Take the most recent message from the queue
+            steer_msg = steer_queue.pop()
+            # Clear the queue — older messages are already visible in UI via mq.log_user_message()
+            context.data["pf_steer_queue"] = []
 
             PrintStyle.info(
                 f"[pf_reply] 🔄 Steered: discarding response, "
-                f"dispatching new message"
+                f"dispatching most recent of {len(steer_queue) + 1} queued messages"
             )
             context.log.log(
                 type="info",
-                content="🔄 Steered: previous response discarded for new message.",
+                content=f"🔄 Steered: previous response discarded for new message ({len(steer_queue) + 1} messages were queued).",
             )
 
-            if steer_msg:
-                # Dispatch the stored message
-                context.communicate(
-                    UserMessage(message=steer_msg["text"], id=steer_msg["msg_id"])
-                )
-                save_tmp_chat(context)
+            # Dispatch the most recent queued message
+            context.communicate(
+                UserMessage(message=steer_msg["text"], id=steer_msg["msg_id"])
+            )
+            save_tmp_chat(context)
             return
 
         # Normal flow: extract and send response
