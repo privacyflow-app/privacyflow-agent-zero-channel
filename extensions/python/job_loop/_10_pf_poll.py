@@ -74,6 +74,32 @@ def _save_state(state: dict):
     files.write_file(path, json.dumps(state))
 
 
+def _try_load_chat_from_disk(ctx_id: str) -> AgentContext | None:
+    """Try to lazy-load a specific chat from disk.
+
+    Called when AgentContext.get(ctx_id) returns None but state.json has
+    a mapping for this context. This handles the case where load_tmp_chats()
+    at startup didn't restore the context (e.g. deserialization error, GC,
+    or timing issue).
+    """
+    try:
+        from helpers.persist_chat import _get_chat_file_path, _deserialize_context
+        from helpers import files as _files
+
+        path = _get_chat_file_path(ctx_id)
+        if not os.path.isfile(path):
+            return None
+
+        js = _files.read_file(path)
+        data = json.loads(js)
+        ctx = _deserialize_context(data)
+        PrintStyle.info(f"[pf_channel] 📂 Lazy-loaded context {ctx.id} from disk")
+        return ctx
+    except Exception as e:
+        PrintStyle.error(f"[pf_channel] Failed to lazy-load context {ctx_id}: {format_error(e)}")
+        return None
+
+
 def _format_message_text(msg: dict) -> str:
     """Format message text. Prefix group messages with [contactId]."""
     if msg.get("isGroupMessage") and msg.get("groupId"):
@@ -102,7 +128,15 @@ def _get_or_create_context(msg: dict) -> AgentContext:
             ctx = AgentContext.get(ctx_id)
             if ctx:
                 return ctx
-            # Context was garbage collected, remove stale mapping
+
+            # Context not in memory — try lazy-loading from disk
+            # (load_tmp_chats may have missed it, or it was GC'd)
+            ctx = _try_load_chat_from_disk(ctx_id)
+            if ctx:
+                PrintStyle.info(f"[pf_channel] 📂 Lazy-loaded context {ctx_id} from disk")
+                return ctx
+
+            # Context truly gone, remove stale mapping
             chats.pop(mapping_key, None)
 
         # Create new context
@@ -135,10 +169,10 @@ def _get_or_create_context(msg: dict) -> AgentContext:
 async def _dispatch_message(msg: dict) -> None:
     """Process a single incoming message concurrently.
 
-    A0's context.communicate() has internal locking per context, so if the
-    agent is still processing a previous message on the same context, this
-    will wait for the lock and then process — effectively queuing messages
-    per contact/group without blocking the poll loop.
+    Graceful steering: if the agent is already processing a message on this
+    context, the new message is stored and the current response will be
+    discarded (see _50_pf_reply.py). The new message is dispatched after the
+    current processing finishes naturally — no kill, no interrupt.
     """
     try:
         contact_id = msg.get("contactId", "")
@@ -171,7 +205,20 @@ async def _dispatch_message(msg: dict) -> None:
             source=f" ({messenger})",
         )
 
-        # Dispatch to agent (may block if agent is busy on same context)
+        # Graceful steering: if agent is busy, store message for later dispatch
+        if context.is_running():
+            context.data["pf_steer"] = True
+            context.data["pf_steer_msg"] = {
+                "text": text,
+                "msg_id": msg_id,
+            }
+            PrintStyle.info(
+                f"[pf_channel] 🔄 Steered: agent busy, will discard current "
+                f"response and process new message from {messenger}"
+            )
+            return
+
+        # Agent is idle — dispatch normally
         context.communicate(UserMessage(message=text, id=msg_id))
 
         # Persist chat so it survives restarts

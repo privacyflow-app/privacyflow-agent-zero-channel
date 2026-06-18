@@ -4,6 +4,10 @@ PrivacyFlow Channel Auto-Reply Extension
 Fires when the agent finishes processing.
 If the context has PF routing metadata, extracts the agent's response
 and sends it back to PrivacyFlow via the send API.
+
+Graceful steering: if pf_steer flag is set (new message arrived while
+agent was busy), the response is discarded and the stored message is
+dispatched instead — no kill, no interrupt.
 """
 
 import asyncio
@@ -14,7 +18,8 @@ from typing import Any
 from helpers.extension import Extension
 from helpers.print_style import PrintStyle
 from helpers.errors import format_error
-from agent import AgentContext
+from helpers.persist_chat import save_tmp_chat
+from agent import AgentContext, UserMessage
 
 
 # Load helpers via importlib since user plugins can't use `from plugins.*` imports
@@ -66,14 +71,42 @@ class PfAutoReply(Extension):
     """Send agent response back to PrivacyFlow."""
 
     async def execute(self, **kwargs: Any) -> None:
+        PrintStyle.info("[pf_reply] 🔍 process_chain_end fired")
+
         if not self.agent or self.agent.number != 0:
             return
 
         context = self.agent.context
         pf_routing = context.data.get("pf_routing")
         if not pf_routing:
+            PrintStyle.info("[pf_reply] No pf_routing metadata, skipping")
             return
 
+        PrintStyle.info(f"[pf_reply] 📤 Processing reply for {pf_routing.get('messenger', '?')} → {pf_routing.get('contact_id', '?')}")
+
+        # Graceful steering: discard response and dispatch stored message
+        if context.data.get("pf_steer"):
+            steer_msg = context.data.pop("pf_steer_msg", None)
+            context.data.pop("pf_steer", None)
+
+            PrintStyle.info(
+                f"[pf_reply] 🔄 Steered: discarding response, "
+                f"dispatching new message"
+            )
+            context.log.log(
+                type="info",
+                content="🔄 Steered: previous response discarded for new message.",
+            )
+
+            if steer_msg:
+                # Dispatch the stored message
+                context.communicate(
+                    UserMessage(message=steer_msg["text"], id=steer_msg["msg_id"])
+                )
+                save_tmp_chat(context)
+            return
+
+        # Normal flow: extract and send response
         response_text = _extract_last_response(context)
         if not response_text:
             return
