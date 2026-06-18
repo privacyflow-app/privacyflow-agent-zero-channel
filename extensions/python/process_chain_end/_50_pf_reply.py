@@ -56,13 +56,18 @@ class PfAutoReply(Extension):
     """Send agent response back to PrivacyFlow."""
 
     async def execute(self, **kwargs: Any) -> None:
+        PrintStyle.info("[pf_reply] 🔍 process_chain_end fired")
+
         if not self.agent or self.agent.number != 0:
             return
 
         context = self.agent.context
         pf_routing = context.data.get("pf_routing")
         if not pf_routing:
+            PrintStyle.info("[pf_reply] No pf_routing metadata, skipping")
             return
+
+        PrintStyle.info(f"[pf_reply] 📤 Processing reply for {pf_routing.get('messenger', '?')} → {pf_routing.get('contact_id', '?')}")
 
         # Graceful steering: discard response and dispatch stored message
         if context.data.get("pf_steer"):
