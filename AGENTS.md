@@ -50,7 +50,7 @@ The plugin integrates with `privacyflow-public-backend-api`. The public API expo
 | `/api/v1/messages/poll` | GET | Poll incoming messages from `poll:{appId}` Redis queue |
 | `/api/v1/messages/send` | POST | Send outgoing messages to `outgoing-{messenger}` BullMQ queues |
 
-**PolledMessage**: `{appId, messenger, contactId, messageId, content, timestamp, groupId?, isGroupMessage, isCommand, command?}`
+**PolledMessage**: `{appId, messenger, contactId, messageId, content, timestamp, groupId?, isGroupMessage}`
 
 **SendMessageInput**: `{appId, contactId, message, messenger, groupId?}`
 

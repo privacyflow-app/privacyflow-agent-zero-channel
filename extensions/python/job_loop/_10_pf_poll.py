@@ -277,10 +277,6 @@ async def _poll_loop() -> None:
             messages = response.get("messages", [])
 
             for msg in messages:
-                # Skip command messages
-                if msg.get("isCommand"):
-                    continue
-
                 # Dispatch concurrently — don't block the poll loop
                 asyncio.create_task(_dispatch_message(msg))
 
