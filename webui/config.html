@@ -6,7 +6,26 @@
 <body>
     <div x-data>
         <template x-if="config">
-            <div>
+            <div x-init="
+              context.pfTestResult = null;
+              context.pfTesting = false;
+              context.runPfTest = async () => {
+                context.pfTesting = true;
+                context.pfTestResult = null;
+                try {
+                  const resp = await globalThis.fetchApi('/plugins/privacyflow_channel/pf_test_connection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                  });
+                  context.pfTestResult = await resp.json();
+                } catch (e) {
+                  context.pfTestResult = { ok: false, error: 'Request failed: ' + (e?.message || String(e)), checks: {} };
+                } finally {
+                  context.pfTesting = false;
+                }
+              };
+            ">
                 <div class="section-title">PrivacyFlow Channel</div>
                 <div class="section-description">
                     Bi-directional channel connecting PrivacyFlow (Signal, SimpleX, Session) to Agent Zero.
@@ -58,12 +77,64 @@
                     </div>
                 </div>
 
-                <div class="section-description" style="margin-top: 1rem; opacity: 0.7;">
-                    <strong>Note:</strong> These values are stored as plugin configuration and injected as
-                    environment variables (<code>PF_API_BASE</code>, <code>PF_API_KEY</code>, <code>PF_APP_ID</code>)
-                    when the plugin runs. You can also set them directly in your
-                    <strong>Settings &rarr; Secrets</strong> or <code>.env</code> file.
+                <!-- Test Connection Button -->
+                <div class="field" style="margin-top: 1rem;">
+                    <div class="field-label">
+                        <div class="field-title">Test Connection</div>
+                        <div class="field-description">
+                            Verify your configuration by running a health check, auth verification,
+                            and app ID validation against the PrivacyFlow API.
+                        </div>
+                    </div>
+                    <div class="field-control">
+                        <button type="button"
+                                @click="context.runPfTest()"
+                                :disabled="context.pfTesting"
+                                style="background:var(--color-highlight); color:#fff; border:none; padding:0.35rem 0.85rem; border-radius:0.3rem; cursor:pointer; font-weight:600;"
+                                x-text="context.pfTesting ? 'Testing…' : 'Test Connection'"></button>
+                    </div>
                 </div>
+
+                <!-- Test Results -->
+                <template x-if="context.pfTestResult">
+                    <div style="margin-top: 0.75rem; border: 1px solid var(--color-border); border-radius: 0.5rem; padding: 0.75rem;">
+                        <!-- Overall status -->
+                        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.5rem;">
+                            <span x-show="context.pfTestResult.ok"
+                                  style="color: #4caf50; font-weight: 700;">✅ All checks passed</span>
+                            <span x-show="!context.pfTestResult.ok"
+                                  style="color: #f44336; font-weight: 700;">❌ Connection test failed</span>
+                        </div>
+
+                        <!-- Per-check results -->
+                        <template x-if="context.pfTestResult.checks">
+                            <div style="display:flex; flex-direction:column; gap:0.35rem;">
+                                <template x-for="(check, name) in context.pfTestResult.checks" :key="name">
+                                    <div style="display:flex; align-items:flex-start; gap:0.4rem;">
+                                        <span x-show="check.ok" style="color:#4caf50;">✅</span>
+                                        <span x-show="!check.ok" style="color:#f44336;">❌</span>
+                                        <div>
+                                            <span style="font-weight:600;" x-text="name"></span>
+                                            <span x-show="check.error" style="color: var(--color-error-text, #f44336);" x-text="' — ' + check.error"></span>
+                                            <span x-show="check.detail" style="opacity:0.8;" x-text="' — ' + check.detail"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
+
+                        <!-- Error summary -->
+                        <div x-show="context.pfTestResult.error && !context.pfTestResult.checks"
+                             style="color: var(--color-error-text, #f44336);"
+                             x-text="context.pfTestResult.error"></div>
+
+                        <!-- Detail message -->
+                        <div x-show="context.pfTestResult.detail"
+                             style="margin-top:0.4rem; opacity:0.8;"
+                             x-text="context.pfTestResult.detail"></div>
+                    </div>
+                </template>
+
             </div>
         </template>
     </div>

@@ -271,6 +271,27 @@ async def _poll_loop() -> None:
     """
     PrintStyle.info(f"[pf_channel] 🔄 Poller started (interval: {POLL_INTERVAL_SEC}s)")
 
+    # Verify auth before starting poll loop — fail fast on bad credentials
+    try:
+        auth_result = await asyncio.to_thread(_pf_client.verify_auth)
+        if not auth_result.get("valid"):
+            PrintStyle.error("[pf_channel] ❌ Auth verification failed: API key returned invalid=false")
+            return
+        app_ids = auth_result.get("appIds", [])
+        configured_app_id = _pf_client._get_app_id()
+        if configured_app_id and configured_app_id not in app_ids:
+            PrintStyle.error(
+                f"[pf_channel] ❌ App ID '{configured_app_id}' not authorized. "
+                f"Valid app IDs: {', '.join(app_ids) if app_ids else '(none)'}"
+            )
+            return
+        PrintStyle.success(
+            f"[pf_channel] ✅ Auth verified — authorized for {len(app_ids)} app(s)"
+        )
+    except Exception as e:
+        PrintStyle.error(f"[pf_channel] ❌ Auth verification failed: {format_error(e)}")
+        return
+
     while True:
         try:
             response = await asyncio.to_thread(poll_messages, 10)

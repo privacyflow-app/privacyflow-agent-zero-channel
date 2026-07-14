@@ -125,16 +125,25 @@ class PfAutoReply(Extension):
         chunks = split_message(response_text, messenger)
         for chunk in chunks:
             try:
-                await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     send_message,
                     contact_id,
                     chunk,
                     messenger,
                     group_id,
                 )
-                PrintStyle.info(
-                    f"[pf_reply] ✅ Sent response chunk ({messenger}, {len(chunk)} chars)"
-                )
+                # Inspect response for partial failures (HTTP 202 can still have failedMessages)
+                failed = result.get("failedMessages", [])
+                if failed:
+                    for fm in failed:
+                        err = fm.get("error", "unknown error")
+                        PrintStyle.error(
+                            f"[pf_reply] ⚠️ Send failed for contact {fm.get('contactId', '?')}: {err}"
+                        )
+                else:
+                    PrintStyle.info(
+                        f"[pf_reply] ✅ Sent response chunk ({messenger}, {len(chunk)} chars)"
+                    )
             except Exception as e:
                 PrintStyle.error(f"[pf_reply] Failed to send: {format_error(e)}")
 

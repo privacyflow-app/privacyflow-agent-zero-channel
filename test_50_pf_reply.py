@@ -39,12 +39,30 @@ class MockAgentContext:
 
 
 # Mock A0 framework imports before importing the module under test
+# Use types.ModuleType for 'helpers' so `from helpers import plugins` works
+# when _load_helper() executes pf_client.py via importlib. MagicMock doesn't
+# support Python's `from X import Y` import protocol reliably.
+import types as _types
+_helpers_mock = _types.ModuleType("helpers")
+_helpers_mock.plugins = MagicMock()
+_helpers_mock.extension = MagicMock()
+_helpers_mock.print_style = MagicMock()
+_helpers_mock.errors = MagicMock()
+_helpers_mock.persist_chat = MagicMock()
+sys.modules["helpers"] = _helpers_mock
 sys.modules["helpers.extension"] = MagicMock()
 sys.modules["helpers.print_style"] = MagicMock()
 sys.modules["helpers.errors"] = MagicMock()
+sys.modules["helpers.plugins"] = MagicMock()
+sys.modules["helpers.persist_chat"] = MagicMock()
 sys.modules["agent"] = MagicMock()
 sys.modules["plugins.privacyflow_channel.helpers.pf_client"] = MagicMock()
 sys.modules["plugins.privacyflow_channel.helpers.message_splitter"] = MagicMock()
+# Ensure requests is mockable if not installed
+try:
+    import requests  # noqa: F401
+except ImportError:
+    sys.modules["requests"] = MagicMock()
 
 sys.path.insert(0, "extensions/python/process_chain_end")
 from _50_pf_reply import _get_logs_safe, _extract_last_response
