@@ -4,18 +4,40 @@ PrivacyFlow Channel Auto-Reply Extension
 Fires when the agent finishes processing.
 If the context has PF routing metadata, extracts the agent's response
 and sends it back to PrivacyFlow via the send API.
+
+Graceful steering: if pf_steer flag is set (new message arrived while
+agent was busy), the response is discarded and the stored message is
+dispatched instead — no kill, no interrupt.
 """
 
 import asyncio
+import importlib.util
+import os
 from typing import Any
 
 from helpers.extension import Extension
 from helpers.print_style import PrintStyle
 from helpers.errors import format_error
-from agent import AgentContext
+from helpers.persist_chat import save_tmp_chat
+from agent import AgentContext, UserMessage
 
-from plugins.privacyflow_channel.helpers.pf_client import send_message
-from plugins.privacyflow_channel.helpers.message_splitter import split_message
+
+# Load helpers via importlib since user plugins can't use `from plugins.*` imports
+_PLUGIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+
+
+def _load_helper(name: str):
+    path = os.path.join(_PLUGIN_DIR, "helpers", f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"privacyflow_channel.helpers.{name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_pf_client = _load_helper("pf_client")
+_message_splitter = _load_helper("message_splitter")
+send_message = _pf_client.send_message
+split_message = _message_splitter.split_message
 
 
 def _get_logs_safe(context: AgentContext) -> list:
@@ -49,14 +71,44 @@ class PfAutoReply(Extension):
     """Send agent response back to PrivacyFlow."""
 
     async def execute(self, **kwargs: Any) -> None:
+        PrintStyle.info("[pf_reply] 🔍 process_chain_end fired")
+
         if not self.agent or self.agent.number != 0:
             return
 
         context = self.agent.context
         pf_routing = context.data.get("pf_routing")
         if not pf_routing:
+            PrintStyle.info("[pf_reply] No pf_routing metadata, skipping")
             return
 
+        PrintStyle.info(f"[pf_reply] 📤 Processing reply for {pf_routing.get('messenger', '?')} → {pf_routing.get('contact_id', '?')}")
+
+        # Graceful steering: discard response and dispatch most recent queued message
+        steer_queue = context.data.get("pf_steer_queue", [])
+        if steer_queue:
+            # Take the most recent message from the queue
+            steer_msg = steer_queue.pop()
+            # Clear the queue — older messages are already visible in UI via mq.log_user_message()
+            context.data["pf_steer_queue"] = []
+
+            PrintStyle.info(
+                f"[pf_reply] 🔄 Steered: discarding response, "
+                f"dispatching most recent of {len(steer_queue) + 1} queued messages"
+            )
+            context.log.log(
+                type="info",
+                content=f"🔄 Steered: previous response discarded for new message ({len(steer_queue) + 1} messages were queued).",
+            )
+
+            # Dispatch the most recent queued message
+            context.communicate(
+                UserMessage(message=steer_msg["text"], id=steer_msg["msg_id"])
+            )
+            save_tmp_chat(context)
+            return
+
+        # Normal flow: extract and send response
         response_text = _extract_last_response(context)
         if not response_text:
             return
