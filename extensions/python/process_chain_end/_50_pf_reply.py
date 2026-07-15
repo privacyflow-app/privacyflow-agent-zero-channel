@@ -149,3 +149,9 @@ class PfAutoReply(Extension):
 
         # Clear routing metadata after send
         context.data.pop("pf_routing", None)
+
+        # Persist chat so full conversation history survives restarts.
+        # _90_save_chat fires on message_loop_end but may not reliably save
+        # PF contexts (e.g. if extension ordering or errors prevent it).
+        # Without this, chat dirs go missing on restart → duplicate threads.
+        save_tmp_chat(context)
