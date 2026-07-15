@@ -133,9 +133,11 @@ def _cleanup_stale_state_mappings() -> None:
         for key in stale_keys:
             chats.pop(key, None)
         _save_state(state)
+        preview = ", ".join(stale_keys[:5])
+        suffix = "..." if len(stale_keys) > 5 else ""
         PrintStyle.info(
             f"[pf_channel] 🧹 Cleaned {len(stale_keys)} stale state.json mapping(s) "
-            f"(chat dirs missing on disk)"
+            f"(chat dirs missing on disk): {preview}{suffix}"
         )
 
 
