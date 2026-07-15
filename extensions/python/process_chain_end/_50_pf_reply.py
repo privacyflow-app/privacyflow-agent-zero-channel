@@ -84,6 +84,12 @@ class PfAutoReply(Extension):
 
         PrintStyle.info(f"[pf_reply] 📤 Processing reply for {pf_routing.get('messenger', '?')} → {pf_routing.get('contact_id', '?')}")
 
+        # Cancel any active progress check-in timer
+        progress_task = context.data.pop("pf_progress_task", None)
+        if progress_task and not progress_task.done():
+            progress_task.cancel()
+            PrintStyle.info("[pf_reply] Progress timer cancelled")
+
         # Graceful steering: discard response and dispatch most recent queued message
         steer_queue = context.data.get("pf_steer_queue", [])
         if steer_queue:

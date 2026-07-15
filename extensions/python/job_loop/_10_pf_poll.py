@@ -109,6 +109,79 @@ def _try_load_chat_from_disk(ctx_id: str) -> AgentContext | None:
         return None
 
 
+def _start_progress_timer(
+    context: AgentContext,
+    contact_id: str,
+    messenger: str,
+    group_id: str | None,
+) -> None:
+    """Start an async task that sends progress check-in messages while the agent is processing.
+
+    The task is stored on context.data['pf_progress_task'] so _50_pf_reply can
+    cancel it when the response is ready.
+    """
+    import yaml
+
+    # Load config
+    config_path = os.path.join(_PLUGIN_DIR, "default_config.yaml")
+    try:
+        with open(config_path, "r") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+
+    pm_cfg = cfg.get("progress_messages", {})
+    if not pm_cfg.get("enabled", True):
+        return
+
+    initial_delay = pm_cfg.get("initial_delay", 5)
+    repeat_interval = pm_cfg.get("repeat_interval", 30)
+    max_messages = pm_cfg.get("max_messages", 3)
+    messages = pm_cfg.get("messages", [
+        "🔄 On it, looking into this...",
+        "⏳ Still processing...",
+        "⏳ Still working on this, give me a minute...",
+    ])
+
+    async def _progress_loop():
+        try:
+            await asyncio.sleep(initial_delay)
+            for i, msg_text in enumerate(messages[:max_messages]):
+                if not context.is_running():
+                    return
+                if i > 0:
+                    await asyncio.sleep(repeat_interval)
+                if not context.is_running():
+                    return
+                try:
+                    await asyncio.to_thread(
+                        send_message,
+                        contact_id,
+                        msg_text,
+                        messenger,
+                        group_id,
+                    )
+                    PrintStyle.info(
+                        f"[pf_channel] 📡 Progress check-in {i+1}/{max_messages} "
+                        f"sent to {messenger}"
+                    )
+                except Exception as e:
+                    PrintStyle.debug(
+                        f"[pf_channel] Progress message send failed: {format_error(e)}"
+                    )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            PrintStyle.debug(f"[pf_channel] Progress timer error: {format_error(e)}")
+
+    # Cancel any existing progress timer
+    existing = context.data.get("pf_progress_task")
+    if existing and not existing.done():
+        existing.cancel()
+
+    context.data["pf_progress_task"] = asyncio.create_task(_progress_loop())
+
+
 def _format_message_text(msg: dict) -> str:
     """Format message text. Prefix group messages with [contactId]."""
     if msg.get("isGroupMessage") and msg.get("groupId"):
@@ -250,6 +323,9 @@ async def _dispatch_message(msg: dict) -> None:
 
             # Agent is idle — dispatch normally
             context.communicate(UserMessage(message=text, id=msg_id))
+
+            # Start progress check-in timer so the user gets feedback
+            _start_progress_timer(context, contact_id, messenger, group_id)
 
             # Persist chat so it survives restarts
             save_tmp_chat(context)

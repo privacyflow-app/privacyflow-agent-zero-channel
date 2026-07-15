@@ -1,3 +1,12 @@
 pf_api_base: ""
 pf_api_key: ""
 pf_app_id: ""
+progress_messages:
+  enabled: true
+  initial_delay: 5
+  repeat_interval: 30
+  max_messages: 3
+  messages:
+    - "🔄 On it, looking into this..."
+    - "⏳ Still processing..."
+    - "⏳ Still working on this, give me a minute..."
