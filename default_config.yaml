@@ -4,9 +4,15 @@ pf_app_id: ""
 progress_messages:
   enabled: true
   initial_delay: 5
-  repeat_interval: 30
-  max_messages: 3
+  min_interval: 15
+  fallback_interval: 45
+  poll_interval: 3
   messages:
-    - "🔄 On it, looking into this..."
-    - "⏳ Still processing..."
-    - "⏳ Still working on this, give me a minute..."
+    initial: "On it, looking into this for you..."
+    subagent: "Digging a bit deeper into this one..."
+    tool_activity: "Still looking into this, got a few things to check..."
+    reviewing: "Found a few leads, just verifying some things..."
+    synthesizing: "Getting close — putting this together now..."
+    rate_limited: "Still here, just thinking this through..."
+    fallback: "Still on this, it's a complex one — appreciate the patience..."
+    fallback_alt: "Still working away at this, haven't forgotten about you..."

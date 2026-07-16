@@ -64,13 +64,19 @@ _poll_task: asyncio.Task | None = None
 _PROGRESS_DEFAULTS = {
     "enabled": True,
     "initial_delay": 5,
-    "repeat_interval": 30,
-    "max_messages": 3,
-    "messages": [
-        "🔄 On it, looking into this...",
-        "⏳ Still processing...",
-        "⏳ Still working on this, give me a minute...",
-    ],
+    "min_interval": 15,
+    "fallback_interval": 45,
+    "poll_interval": 3,
+    "messages": {
+        "initial": "On it, looking into this for you...",
+        "subagent": "Digging a bit deeper into this one...",
+        "tool_activity": "Still looking into this, got a few things to check...",
+        "reviewing": "Found a few leads, just verifying some things...",
+        "synthesizing": "Getting close \u2014 putting this together now...",
+        "rate_limited": "Still here, just thinking this through...",
+        "fallback": "Still on this, it's a complex one \u2014 appreciate the patience...",
+        "fallback_alt": "Still working away at this, haven't forgotten about you...",
+    },
 }
 
 # Per-context dispatch locks: mapping_key -> asyncio.Lock
@@ -125,16 +131,83 @@ def _try_load_chat_from_disk(ctx_id: str) -> AgentContext | None:
         return None
 
 
+def _classify_log_entries(entries: list, prev_agentno: int) -> tuple[str | None, int]:
+    """Classify new log entries into a progress-signal category.
+
+    Returns (signal, new_agentno) where signal is one of the keys in
+    _PROGRESS_DEFAULTS["messages"] or None if no notable signal was found,
+    and new_agentno is the latest agent number seen (for sub-agent tracking).
+
+    Priority (highest first):
+      subagent > synthesizing > rate_limited > tool_activity > reviewing
+    """
+    signal = None
+    new_agentno = prev_agentno
+    tool_count = 0
+    has_response = False
+
+    for entry in entries:
+        etype = getattr(entry, "type", None)
+        eagentno = getattr(entry, "agentno", 0)
+
+        if eagentno > new_agentno:
+            new_agentno = eagentno
+
+        if etype == "subagent":
+            signal = "subagent"
+        elif etype == "response":
+            has_response = True
+        elif etype in ("tool", "code_exe", "browser", "mcp"):
+            tool_count += 1
+        elif etype == "error":
+            # Don't surface errors directly — treat as activity
+            tool_count += 1
+
+    # Determine signal by priority if not already set to subagent
+    if signal is None:
+        if has_response:
+            signal = "synthesizing"
+        elif new_agentno > prev_agentno:
+            signal = "subagent"
+        elif tool_count >= 3:
+            signal = "reviewing"
+        elif tool_count >= 1:
+            signal = "tool_activity"
+
+    return signal, new_agentno
+
+
+def _read_log_safe(context: AgentContext, start_index: int) -> tuple[list, int]:
+    """Thread-safe read of log entries from start_index onwards.
+
+    Returns (new_entries, current_length). Uses context.log._lock for
+    thread safety, matching the pattern in _get_logs_safe().
+    """
+    log = context.log
+    try:
+        with log._lock:
+            logs = list(log.logs)
+            return logs[start_index:], len(logs)
+    except Exception:
+        return [], start_index
+
+
 def _start_progress_timer(
     context: AgentContext,
     contact_id: str,
     messenger: str,
     group_id: str | None,
 ) -> None:
-    """Start an async task that sends progress check-in messages while the agent is processing.
+    """Start an async task that sends human-like progress messages.
 
-    The task is stored on context.data['pf_progress_task'] so _50_pf_reply can
-    cancel it when the response is ready.
+    Instead of a fixed-interval timer with generic messages, this watches
+    context.log for new entries and generates messages based on what the
+    agent is actually doing (sub-agent spawned, tool calls, synthesizing
+    response, etc.). Falls back to "still working" nudges during silent
+    inference (long LLM calls, rate limits).
+
+    The task is stored on context.data['pf_progress_task'] so _50_pf_reply
+    can cancel it when the response is ready.
     """
     import yaml
 
@@ -147,40 +220,91 @@ def _start_progress_timer(
         cfg = {}
 
     pm_cfg = cfg.get("progress_messages", {})
-    if not pm_cfg.get("enabled", _PROGRESS_DEFAULTS["enabled"]):
+    defaults = _PROGRESS_DEFAULTS
+    if not pm_cfg.get("enabled", defaults["enabled"]):
         return
 
-    initial_delay = pm_cfg.get("initial_delay", _PROGRESS_DEFAULTS["initial_delay"])
-    repeat_interval = pm_cfg.get("repeat_interval", _PROGRESS_DEFAULTS["repeat_interval"])
-    max_messages = pm_cfg.get("max_messages", _PROGRESS_DEFAULTS["max_messages"])
-    messages = pm_cfg.get("messages", _PROGRESS_DEFAULTS["messages"])
+    initial_delay = pm_cfg.get("initial_delay", defaults["initial_delay"])
+    min_interval = pm_cfg.get("min_interval", defaults["min_interval"])
+    fallback_interval = pm_cfg.get("fallback_interval", defaults["fallback_interval"])
+    poll_interval = pm_cfg.get("poll_interval", defaults["poll_interval"])
+    msg_cfg = pm_cfg.get("messages", defaults["messages"])
+    # Merge user-provided messages over defaults so partial overrides work
+    messages = {**defaults["messages"], **(msg_cfg if isinstance(msg_cfg, dict) else {})}
+
+    def _get_msg(key: str) -> str:
+        return messages.get(key, defaults["messages"].get(key, "..."))
+
+    async def _send(msg_text: str, label: str) -> None:
+        try:
+            await asyncio.to_thread(
+                send_message,
+                contact_id,
+                msg_text,
+                messenger,
+                group_id,
+            )
+            PrintStyle.info(
+                f"[pf_channel] \U0001f4e1 Progress [{label}] sent to {messenger}"
+            )
+        except Exception as e:
+            PrintStyle.debug(
+                f"[pf_channel] Progress message send failed: {format_error(e)}"
+            )
 
     async def _progress_loop():
         try:
+            # Track log position to diff new entries each tick
+            _, log_len = _read_log_safe(context, 0)
+            last_log_index = log_len
+            prev_agentno = 0
+            fallback_count = 0
+
+            # Initial acknowledgement after delay
             await asyncio.sleep(initial_delay)
-            for i, msg_text in enumerate(messages[:max_messages]):
+            if not context.is_running():
+                return
+            await _send(_get_msg("initial"), "initial")
+            import time
+            last_msg_time = time.monotonic()
+
+            while context.is_running():
+                await asyncio.sleep(poll_interval)
                 if not context.is_running():
                     return
-                if i > 0:
-                    await asyncio.sleep(repeat_interval)
-                if not context.is_running():
-                    return
+
+                # Read new log entries since last check
+                new_entries, current_len = _read_log_safe(context, last_log_index)
+                last_log_index = current_len
+
+                # Check for rate-limit in log.progress
+                progress_text = ""
                 try:
-                    await asyncio.to_thread(
-                        send_message,
-                        contact_id,
-                        msg_text,
-                        messenger,
-                        group_id,
-                    )
-                    PrintStyle.info(
-                        f"[pf_channel] 📡 Progress check-in {i+1}/{max_messages} "
-                        f"sent to {messenger}"
-                    )
-                except Exception as e:
-                    PrintStyle.debug(
-                        f"[pf_channel] Progress message send failed: {format_error(e)}"
-                    )
+                    progress_text = context.log.progress or ""
+                except Exception:
+                    pass
+                is_rate_limited = "rate" in progress_text.lower() or "limit" in progress_text.lower()
+
+                now = time.monotonic()
+                elapsed = now - last_msg_time
+
+                # Classify log activity
+                signal, prev_agentno = _classify_log_entries(new_entries, prev_agentno)
+
+                # Override signal if rate-limited (high priority but below subagent)
+                if is_rate_limited and signal not in ("subagent",):
+                    signal = "rate_limited"
+
+                if signal and elapsed >= min_interval:
+                    await _send(_get_msg(signal), signal)
+                    last_msg_time = now
+                    fallback_count = 0
+                elif not signal and elapsed >= fallback_interval:
+                    # No notable events — send a fallback nudge
+                    fb_key = "fallback" if fallback_count % 2 == 0 else "fallback_alt"
+                    await _send(_get_msg(fb_key), fb_key)
+                    last_msg_time = now
+                    fallback_count += 1
         except asyncio.CancelledError:
             pass
         except Exception as e:
