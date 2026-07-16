@@ -3,15 +3,19 @@ Tests for the event-driven progress timer in _10_pf_poll.py.
 
 Tests cover:
   1. _classify_log_entries() — signal classification from log entries
-  2. _start_progress_timer() — full event-loop behavior:
+  2. _detect_meta_command() — suppress/resume phrase detection
+  3. _start_progress_timer() — full event-loop behavior:
      - Initial message sent after initial_delay
      - Event-driven messages fire on log activity (subagent, tool, synthesizing)
      - Throttling: min_interval respected between messages
-     - Fallback nudges after fallback_interval with no log activity
-     - Fallback rotation between two messages
+     - Escalating fallback schedule (short → medium → long → hours → deep)
+     - Time-aware fallback messages with {minutes}/{hours} formatting
+     - pf_no_updates flag suppresses the loop
+     - pf_no_updates flag reset on new task
      - is_running() False → loop exits
      - Existing task cancelled when new one starts
      - Disabled via config → no task created
+  4. _handle_meta_command() — suppress/resume ack + flag lifecycle
 """
 
 import asyncio
@@ -50,6 +54,8 @@ sys.path.insert(0, "extensions/python/job_loop")
 import _10_pf_poll as mod  # noqa: E402
 from _10_pf_poll import (  # noqa: E402
     _classify_log_entries,
+    _detect_meta_command,
+    _handle_meta_command,
     _start_progress_timer,
     _PROGRESS_DEFAULTS,
 )
@@ -85,7 +91,6 @@ def _make_context(log_entries=None, is_running_seq=None):
     """Build a mock AgentContext with a FakeLog and configurable is_running().
 
     is_running_seq: list of bools returned in order; None means always True.
-    log_entries: initial list of FakeLogEntry objects in the log.
     """
     ctx = MagicMock()
     ctx.data = {}
@@ -113,7 +118,7 @@ class TestClassifyLogEntries(unittest.TestCase):
 
     def test_subagent_entry(self):
         entries = [FakeLogEntry("subagent")]
-        signal, agentno = _classify_log_entries(entries, 0)
+        signal, _ = _classify_log_entries(entries, 0)
         self.assertEqual(signal, "subagent")
 
     def test_single_tool_call(self):
@@ -166,6 +171,195 @@ class TestClassifyLogEntries(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Tests for _detect_meta_command()
+# ---------------------------------------------------------------------------
+
+
+class TestDetectMetaCommand(unittest.TestCase):
+    """Tests for the meta-command phrase detector.
+
+    The critical test suite — prevents false positives that would eat real
+    user messages. Uses exact phrase matching (not substring) + length guard.
+    """
+
+    # --- Positive: suppress phrases ---
+
+    def test_suppress_no_need_to_update_me(self):
+        self.assertEqual(_detect_meta_command("no need to update me"), "suppress")
+
+    def test_suppress_no_updates(self):
+        self.assertEqual(_detect_meta_command("no updates"), "suppress")
+
+    def test_suppress_stop_updates(self):
+        self.assertEqual(_detect_meta_command("stop updates"), "suppress")
+
+    def test_suppress_stop_updating_me(self):
+        self.assertEqual(_detect_meta_command("stop updating me"), "suppress")
+
+    def test_suppress_quiet(self):
+        self.assertEqual(_detect_meta_command("quiet"), "suppress")
+
+    def test_suppress_case_insensitive(self):
+        self.assertEqual(_detect_meta_command("Stop Updates"), "suppress")
+        self.assertEqual(_detect_meta_command("QUIET"), "suppress")
+
+    def test_suppress_trailing_punctuation(self):
+        self.assertEqual(_detect_meta_command("stop updates."), "suppress")
+        self.assertEqual(_detect_meta_command("quiet!"), "suppress")
+        self.assertEqual(_detect_meta_command("no updates?"), "suppress")
+
+    def test_suppress_dont_without_apostrophe(self):
+        self.assertEqual(_detect_meta_command("dont update me"), "suppress")
+
+    # --- Positive: resume phrases ---
+
+    def test_resume_update_me(self):
+        self.assertEqual(_detect_meta_command("update me"), "resume")
+
+    def test_resume_keep_me_posted(self):
+        self.assertEqual(_detect_meta_command("keep me posted"), "resume")
+
+    def test_resume_resume_updates(self):
+        self.assertEqual(_detect_meta_command("resume updates"), "resume")
+
+    def test_resume_send_updates(self):
+        self.assertEqual(_detect_meta_command("send updates"), "resume")
+
+    def test_resume_case_insensitive(self):
+        self.assertEqual(_detect_meta_command("UPDATE ME"), "resume")
+
+    # --- Negative: false positive prevention ---
+
+    def test_negative_keep_this_quiet(self):
+        """'keep this quiet' must NOT match — it's a real question for the agent."""
+        self.assertIsNone(_detect_meta_command("keep this quiet"))
+
+    def test_negative_hold_off_on_the_analysis(self):
+        """'hold off on the analysis' must NOT match — contains 'hold off on' but
+        is a longer phrase, not a meta-command."""
+        self.assertIsNone(_detect_meta_command("hold off on the analysis"))
+
+    def test_negative_can_you_update_me_on_the_status(self):
+        """A longer message containing 'update me' must NOT match — length guard."""
+        self.assertIsNone(_detect_meta_command("can you update me on the status of the project"))
+
+    def test_negative_what_updates_do_you_have(self):
+        self.assertIsNone(_detect_meta_command("what updates do you have"))
+
+    def test_negative_empty_string(self):
+        self.assertIsNone(_detect_meta_command(""))
+
+    def test_negative_normal_question(self):
+        self.assertIsNone(_detect_meta_command("what's the weather like?"))
+
+    def test_negative_long_message_with_quiet(self):
+        """A long message containing 'quiet' must NOT match — length guard."""
+        self.assertIsNone(_detect_meta_command(
+            "this is a long message about keeping things quiet in the repository"
+        ))
+
+    def test_negative_quietly_as_adverb(self):
+        """'quietly' is not the same as 'quiet' — must not match."""
+        self.assertIsNone(_detect_meta_command("quietly"))
+
+    def test_negative_silencer(self):
+        """'silencer' is not 'silence' — must not match."""
+        self.assertIsNone(_detect_meta_command("silencer"))
+
+    def test_negative_update_me_on_x_long_message(self):
+        """A >50 char message with 'update me' must not match."""
+        self.assertIsNone(_detect_meta_command(
+            "please update me on the status of the quarterly report when ready"
+        ))
+
+
+# ---------------------------------------------------------------------------
+# Tests for _handle_meta_command()
+# ---------------------------------------------------------------------------
+
+
+class TestHandleMetaCommand(unittest.TestCase):
+    """Tests for suppress/resume ack + flag lifecycle."""
+
+    def test_suppress_sets_flag(self):
+        ctx = _make_context()
+        with patch.object(asyncio, "to_thread", _noop_to_thread):
+            asyncio.run(_handle_meta_command(ctx, "suppress", "c1", "signal", None))
+        self.assertTrue(ctx.data.get("pf_no_updates"))
+
+    def test_suppress_cancels_existing_task(self):
+        ctx = _make_context()
+        existing = MagicMock()
+        existing.done.return_value = False
+        ctx.data["pf_progress_task"] = existing
+        with patch.object(asyncio, "to_thread", _noop_to_thread):
+            asyncio.run(_handle_meta_command(ctx, "suppress", "c1", "signal", None))
+        existing.cancel.assert_called_once()
+
+    def test_suppress_sends_ack(self):
+        ctx = _make_context()
+        sent = []
+
+        async def fake_to_thread(fn, *args):
+            sent.append((fn.__name__, args))
+
+        with patch.object(asyncio, "to_thread", fake_to_thread):
+            asyncio.run(_handle_meta_command(ctx, "suppress", "c1", "signal", None))
+        self.assertEqual(len(sent), 1)
+        self.assertIn("hold off", sent[0][1][1])
+
+    def test_resume_clears_flag(self):
+        ctx = _make_context()
+        ctx.data["pf_no_updates"] = True
+        with patch.object(asyncio, "to_thread", _noop_to_thread), \
+             patch.object(mod, "_start_progress_timer"):
+            asyncio.run(_handle_meta_command(ctx, "resume", "c1", "signal", None))
+        self.assertFalse(ctx.data.get("pf_no_updates"))
+
+    def test_resume_sends_ack(self):
+        ctx = _make_context()
+        sent = []
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        with patch.object(asyncio, "to_thread", fake_to_thread), \
+             patch.object(mod, "_start_progress_timer"):
+            asyncio.run(_handle_meta_command(ctx, "resume", "c1", "signal", None))
+        # First call is the resume ack
+        self.assertGreaterEqual(len(sent), 1)
+        self.assertIn("Back on it", sent[0][1])
+
+    def test_resume_restarts_timer_when_running(self):
+        ctx = _make_context(is_running_seq=[True])
+        with patch.object(asyncio, "to_thread", _noop_to_thread), \
+             patch.object(mod, "_start_progress_timer") as start_timer:
+            asyncio.run(_handle_meta_command(ctx, "resume", "c1", "signal", None))
+        start_timer.assert_called_once()
+
+    def test_resume_sends_idle_ack_when_not_running(self):
+        ctx = _make_context(is_running_seq=[False])
+        sent = []
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        with patch.object(asyncio, "to_thread", fake_to_thread), \
+             patch.object(mod, "_start_progress_timer") as start_timer:
+            asyncio.run(_handle_meta_command(ctx, "resume", "c1", "signal", None))
+        start_timer.assert_not_called()
+        # Should send resume_ack + resume_idle_ack (2 sends)
+        self.assertEqual(len(sent), 2)
+        self.assertIn("nothing's running", sent[1][1])
+
+    def test_unknown_command_returns_false(self):
+        ctx = _make_context()
+        with patch.object(asyncio, "to_thread", _noop_to_thread):
+            result = asyncio.run(_handle_meta_command(ctx, "unknown", "c1", "signal", None))
+        self.assertFalse(result)
+
+
+# ---------------------------------------------------------------------------
 # Tests for _start_progress_timer() — async event loop
 # ---------------------------------------------------------------------------
 
@@ -179,10 +373,10 @@ class TestProgressTimerDisabled(unittest.TestCase):
              patch("builtins.open", MagicMock(side_effect=FileNotFoundError)), \
              patch.object(mod, "_PROGRESS_DEFAULTS", {
                  "enabled": False, "initial_delay": 0, "min_interval": 0,
-                 "fallback_interval": 0, "poll_interval": 0, "messages": {},
+                 "poll_interval": 0, "fallback_schedule": [],
+                 "messages": {},
              }):
             _start_progress_timer(ctx, "c1", "signal", None)
-
         create_task.assert_not_called()
         self.assertNotIn("pf_progress_task", ctx.data)
 
@@ -191,15 +385,16 @@ class TestProgressTimerInitialMessage(unittest.TestCase):
     """Initial message sent after initial_delay."""
 
     def setUp(self):
-        self._orig_defaults = mod._PROGRESS_DEFAULTS
+        self._orig = mod._PROGRESS_DEFAULTS
         mod._PROGRESS_DEFAULTS = {
             "enabled": True, "initial_delay": 0, "min_interval": 999,
-            "fallback_interval": 999, "poll_interval": 0,
+            "poll_interval": 0,
+            "fallback_schedule": [(999999, 999, "fallback_short")],
             "messages": _PROGRESS_DEFAULTS["messages"],
         }
 
     def tearDown(self):
-        mod._PROGRESS_DEFAULTS = self._orig_defaults
+        mod._PROGRESS_DEFAULTS = self._orig
 
     def test_initial_message_sent(self):
         ctx = _make_context(is_running_seq=[True, False])
@@ -216,7 +411,6 @@ class TestProgressTimerInitialMessage(unittest.TestCase):
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
-        # At least the initial message should have been sent
         self.assertGreaterEqual(len(sent), 1)
         self.assertIn("On it", sent[0][1])
 
@@ -225,18 +419,18 @@ class TestProgressTimerEventDriven(unittest.TestCase):
     """Event-driven messages fire on log activity."""
 
     def setUp(self):
-        self._orig_defaults = mod._PROGRESS_DEFAULTS
+        self._orig = mod._PROGRESS_DEFAULTS
         mod._PROGRESS_DEFAULTS = {
             "enabled": True, "initial_delay": 0, "min_interval": 0,
-            "fallback_interval": 999, "poll_interval": 0,
+            "poll_interval": 0,
+            "fallback_schedule": [(999999, 999, "fallback_short")],
             "messages": _PROGRESS_DEFAULTS["messages"],
         }
 
     def tearDown(self):
-        mod._PROGRESS_DEFAULTS = self._orig_defaults
+        mod._PROGRESS_DEFAULTS = self._orig
 
     def test_tool_activity_triggers_message(self):
-        """A tool log entry after the initial message triggers tool_activity."""
         ctx = _make_context()
         sent = []
         sleep_calls = [0]
@@ -245,8 +439,6 @@ class TestProgressTimerEventDriven(unittest.TestCase):
             sent.append(args)
 
         async def sleeping_sleep(_secs):
-            # On the 2nd sleep call (first poll_interval inside the loop),
-            # add a tool entry before yielding back
             sleep_calls[0] += 1
             if sleep_calls[0] == 2:
                 ctx.log.add(FakeLogEntry("tool"))
@@ -267,7 +459,6 @@ class TestProgressTimerEventDriven(unittest.TestCase):
                         f"Expected tool_activity in {msgs}")
 
     def test_subagent_triggers_message(self):
-        """A subagent log entry triggers the subagent message."""
         ctx = _make_context()
         sent = []
         sleep_calls = [0]
@@ -296,21 +487,26 @@ class TestProgressTimerEventDriven(unittest.TestCase):
 
 
 class TestProgressTimerFallback(unittest.TestCase):
-    """Fallback nudges sent when no log activity for fallback_interval."""
+    """Escalating fallback nudges sent when no log activity."""
 
     def setUp(self):
-        self._orig_defaults = mod._PROGRESS_DEFAULTS
+        self._orig = mod._PROGRESS_DEFAULTS
+        # Very short schedule for testing
         mod._PROGRESS_DEFAULTS = {
             "enabled": True, "initial_delay": 0, "min_interval": 999,
-            "fallback_interval": 0, "poll_interval": 0,
+            "poll_interval": 0,
+            "fallback_schedule": [
+                (10, 0, "fallback_short"),       # 0-10s elapsed: every 0s
+                (30, 0, "fallback_medium"),       # 10-30s: every 0s
+                (999999, 0, "fallback_long"),     # 30s+: every 0s
+            ],
             "messages": _PROGRESS_DEFAULTS["messages"],
         }
 
     def tearDown(self):
-        mod._PROGRESS_DEFAULTS = self._orig_defaults
+        mod._PROGRESS_DEFAULTS = self._orig
 
     def test_fallback_sent_on_no_activity(self):
-        """With no log events and fallback_interval=0, fallback fires."""
         ctx = _make_context()
         sent = []
 
@@ -327,14 +523,96 @@ class TestProgressTimerFallback(unittest.TestCase):
 
         asyncio.run(runner())
         msgs = [s[1] for s in sent]
-        # Initial + at least one fallback
         self.assertGreaterEqual(len(msgs), 2)
         self.assertTrue(any("Still on this" in m or "Still working" in m for m in msgs),
                         f"Expected fallback in {msgs}")
 
-    def test_fallback_rotation(self):
-        """Fallback messages alternate between the two templates."""
+    def test_escalation_switches_to_medium_message(self):
+        """After 10s elapsed, the message switches from short to medium."""
         ctx = _make_context()
+        sent = []
+        mock_time = [0.0]
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        def fake_monotonic():
+            return mock_time[0]
+
+        async def time_sleep(_secs):
+            mock_time[0] += 5  # each tick advances 5s
+
+        async def runner():
+            with patch.object(asyncio, "sleep", time_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)), \
+                 patch("time.monotonic", fake_monotonic):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                # initial + poll(t=5, short) + poll(t=10, medium) + poll(t=15, medium) + exit
+                ctx.is_running.side_effect = [True, True, True, True, False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        msgs = [s[1] for s in sent]
+        # First fallback (t=5, <10s) should be short
+        self.assertGreaterEqual(len(msgs), 2)
+        self.assertIn("Still on this", msgs[1])  # fallback_short
+        # Second fallback (t=10+, ≥10s) should be medium
+        if len(msgs) >= 3:
+            self.assertIn("few minutes", msgs[2])  # fallback_medium
+
+    def test_time_aware_message_includes_minutes(self):
+        """Long fallback messages include {minutes} placeholder."""
+        ctx = _make_context()
+        sent = []
+        mock_time = [0.0]
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        def fake_monotonic():
+            return mock_time[0]
+
+        async def time_sleep(_secs):
+            mock_time[0] += 35  # jump past 30s threshold to fallback_long
+
+        async def runner():
+            with patch.object(asyncio, "sleep", time_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)), \
+                 patch("time.monotonic", fake_monotonic):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True, True, True, False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        msgs = [s[1] for s in sent]
+        # Should have initial + a long fallback with minutes
+        self.assertGreaterEqual(len(msgs), 2)
+        long_msgs = [m for m in msgs if "minutes in" in m]
+        self.assertTrue(long_msgs, f"Expected time-aware message in {msgs}")
+
+
+class TestProgressTimerSuppressFlag(unittest.TestCase):
+    """pf_no_updates flag suppresses the progress loop."""
+
+    def setUp(self):
+        self._orig = mod._PROGRESS_DEFAULTS
+        mod._PROGRESS_DEFAULTS = {
+            "enabled": True, "initial_delay": 0, "min_interval": 0,
+            "poll_interval": 0,
+            "fallback_schedule": [(999999, 0, "fallback_short")],
+            "messages": _PROGRESS_DEFAULTS["messages"],
+        }
+
+    def tearDown(self):
+        mod._PROGRESS_DEFAULTS = self._orig
+
+    def test_flag_set_before_loop_is_cleared_by_timer_start(self):
+        """If pf_no_updates was set before _start_progress_timer is called,
+        the timer resets it for the new task and the loop runs normally."""
+        ctx = _make_context()
+        ctx.data["pf_no_updates"] = True
         sent = []
 
         async def fake_to_thread(fn, *args):
@@ -345,17 +623,66 @@ class TestProgressTimerFallback(unittest.TestCase):
                  patch.object(asyncio, "to_thread", fake_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
-                # Enough ticks for initial + 2 fallbacks + exit
-                ctx.is_running.side_effect = [True] * 10 + [False]
+                # Flag is reset by _start_progress_timer
+                self.assertNotIn("pf_no_updates", ctx.data)
+                ctx.is_running.side_effect = [True, False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
-        msgs = [s[1] for s in sent]
-        # Should see both fallback variants
-        has_fallback1 = any("Still on this" in m for m in msgs)
-        has_fallback2 = any("haven't forgotten" in m for m in msgs)
-        self.assertTrue(has_fallback1 or has_fallback2,
-                        f"Expected at least one fallback variant in {msgs}")
+        # Initial message should have been sent (flag was reset)
+        self.assertGreaterEqual(len(sent), 1)
+
+    def test_flag_reset_on_new_task(self):
+        """_start_progress_timer resets pf_no_updates for a new task."""
+        ctx = _make_context()
+        ctx.data["pf_no_updates"] = True
+        sent = []
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        async def runner():
+            with patch.object(asyncio, "sleep", _no_op_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                # Flag should be cleared by _start_progress_timer
+                self.assertNotIn("pf_no_updates", ctx.data)
+                ctx.is_running.side_effect = [True, False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        # Initial message should have been sent (flag was reset)
+        self.assertGreaterEqual(len(sent), 1)
+
+    def test_flag_set_during_loop_exits(self):
+        """If pf_no_updates becomes True mid-loop, the loop exits on next tick."""
+        ctx = _make_context()
+        sent = []
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        sleep_calls = [0]
+
+        async def sleeping_sleep(_secs):
+            sleep_calls[0] += 1
+            # After initial message (sleep call 1), set flag on first poll
+            if sleep_calls[0] == 2:
+                ctx.data["pf_no_updates"] = True
+
+        async def runner():
+            with patch.object(asyncio, "sleep", sleeping_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True, True, True, False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        # Only the initial message should have been sent
+        self.assertEqual(len(sent), 1)
+        self.assertIn("On it", sent[0][1])
 
 
 class TestProgressTimerCancelsExisting(unittest.TestCase):
@@ -369,7 +696,7 @@ class TestProgressTimerCancelsExisting(unittest.TestCase):
 
         async def runner():
             with patch.object(asyncio, "sleep", _no_op_sleep), \
-                 patch.object(asyncio, "to_thread", _noop_async), \
+                 patch.object(asyncio, "to_thread", _noop_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
                 existing.cancel.assert_called_once()
@@ -387,15 +714,16 @@ class TestProgressTimerRateLimited(unittest.TestCase):
     """Rate-limit in log.progress triggers the rate_limited message."""
 
     def setUp(self):
-        self._orig_defaults = mod._PROGRESS_DEFAULTS
+        self._orig = mod._PROGRESS_DEFAULTS
         mod._PROGRESS_DEFAULTS = {
             "enabled": True, "initial_delay": 0, "min_interval": 0,
-            "fallback_interval": 999, "poll_interval": 0,
+            "poll_interval": 0,
+            "fallback_schedule": [(999999, 999, "fallback_short")],
             "messages": _PROGRESS_DEFAULTS["messages"],
         }
 
     def tearDown(self):
-        mod._PROGRESS_DEFAULTS = self._orig_defaults
+        mod._PROGRESS_DEFAULTS = self._orig
 
     def test_rate_limited_message(self):
         ctx = _make_context()
@@ -429,7 +757,7 @@ async def _no_op_sleep(_secs):
     return None
 
 
-async def _noop_async(*_args, **_kwargs):
+async def _noop_to_thread(*_args, **_kwargs):
     return None
 
 
