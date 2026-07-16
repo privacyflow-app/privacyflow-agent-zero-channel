@@ -52,10 +52,26 @@ def _load_helper(name: str):
 _pf_client = _load_helper("pf_client")
 poll_messages = _pf_client.poll_messages
 is_configured = _pf_client.is_configured
+send_message = _pf_client.send_message
 
 
 POLL_INTERVAL_SEC = 3
 _poll_task: asyncio.Task | None = None
+
+# Default progress-message config. `default_config.yaml` is the source of
+# truth when present; these constants serve as the documented fallback and
+# keep the default message list in one place (no duplicated literals).
+_PROGRESS_DEFAULTS = {
+    "enabled": True,
+    "initial_delay": 5,
+    "repeat_interval": 30,
+    "max_messages": 3,
+    "messages": [
+        "🔄 On it, looking into this...",
+        "⏳ Still processing...",
+        "⏳ Still working on this, give me a minute...",
+    ],
+}
 
 # Per-context dispatch locks: mapping_key -> asyncio.Lock
 _dispatch_locks: dict[str, asyncio.Lock] = {}
@@ -131,17 +147,13 @@ def _start_progress_timer(
         cfg = {}
 
     pm_cfg = cfg.get("progress_messages", {})
-    if not pm_cfg.get("enabled", True):
+    if not pm_cfg.get("enabled", _PROGRESS_DEFAULTS["enabled"]):
         return
 
-    initial_delay = pm_cfg.get("initial_delay", 5)
-    repeat_interval = pm_cfg.get("repeat_interval", 30)
-    max_messages = pm_cfg.get("max_messages", 3)
-    messages = pm_cfg.get("messages", [
-        "🔄 On it, looking into this...",
-        "⏳ Still processing...",
-        "⏳ Still working on this, give me a minute...",
-    ])
+    initial_delay = pm_cfg.get("initial_delay", _PROGRESS_DEFAULTS["initial_delay"])
+    repeat_interval = pm_cfg.get("repeat_interval", _PROGRESS_DEFAULTS["repeat_interval"])
+    max_messages = pm_cfg.get("max_messages", _PROGRESS_DEFAULTS["max_messages"])
+    messages = pm_cfg.get("messages", _PROGRESS_DEFAULTS["messages"])
 
     async def _progress_loop():
         try:
