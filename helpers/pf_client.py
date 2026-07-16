@@ -30,7 +30,7 @@ def _get_config() -> dict:
     }
 
 
-def _get_base_url() -> str:
+def get_base_url() -> str:
     return _get_config()["pf_api_base"].rstrip("/")
 
 
@@ -38,7 +38,7 @@ def _get_api_key() -> str:
     return _get_config()["pf_api_key"]
 
 
-def _get_app_id() -> str:
+def get_app_id() -> str:
     return _get_config()["pf_app_id"]
 
 
@@ -55,7 +55,7 @@ def is_configured() -> bool:
 def health_check() -> bool:
     """GET /api/v1/health"""
     try:
-        resp = requests.get(f"{_get_base_url()}/api/v1/health", timeout=10)
+        resp = requests.get(f"{get_base_url()}/api/v1/health", timeout=10)
         return resp.ok
     except Exception:
         return False
@@ -64,7 +64,7 @@ def health_check() -> bool:
 def verify_auth() -> dict:
     """GET /api/v1/auth/verify"""
     resp = requests.get(
-        f"{_get_base_url()}/api/v1/auth/verify",
+        f"{get_base_url()}/api/v1/auth/verify",
         headers=_get_headers(),
         timeout=10,
     )
@@ -75,7 +75,7 @@ def verify_auth() -> dict:
 def poll_messages(limit: int = 10) -> dict:
     """GET /api/v1/messages/poll?limit=N"""
     resp = requests.get(
-        f"{_get_base_url()}/api/v1/messages/poll?limit={limit}",
+        f"{get_base_url()}/api/v1/messages/poll?limit={limit}",
         headers=_get_headers(),
         timeout=30,
     )
@@ -91,7 +91,7 @@ def send_message(
 ) -> dict:
     """POST /api/v1/messages/send"""
     msg = {
-        "appId": _get_app_id(),
+        "appId": get_app_id(),
         "contactId": contact_id,
         "message": message,
         "messenger": messenger,
@@ -100,7 +100,7 @@ def send_message(
         msg["groupId"] = group_id
 
     resp = requests.post(
-        f"{_get_base_url()}/api/v1/messages/send",
+        f"{get_base_url()}/api/v1/messages/send",
         headers={**_get_headers(), "Content-Type": "application/json"},
         json={"messages": [msg]},
         timeout=30,

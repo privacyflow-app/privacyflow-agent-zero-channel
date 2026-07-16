@@ -124,28 +124,48 @@ class PfAutoReply(Extension):
         # Split and send each chunk
         chunks = split_message(response_text, messenger)
         for chunk in chunks:
-            try:
-                result = await asyncio.to_thread(
-                    send_message,
-                    contact_id,
-                    chunk,
-                    messenger,
-                    group_id,
-                )
-                # Inspect response for partial failures (HTTP 202 can still have failedMessages)
-                failed = result.get("failedMessages", [])
-                if failed:
-                    for fm in failed:
-                        err = fm.get("error", "unknown error")
-                        PrintStyle.error(
-                            f"[pf_reply] ⚠️ Send failed for contact {fm.get('contactId', '?')}: {err}"
-                        )
-                else:
-                    PrintStyle.info(
-                        f"[pf_reply] ✅ Sent response chunk ({messenger}, {len(chunk)} chars)"
+            last_err: Exception | None = None
+            for attempt in (1, 2):
+                try:
+                    result = await asyncio.to_thread(
+                        send_message,
+                        contact_id,
+                        chunk,
+                        messenger,
+                        group_id,
                     )
-            except Exception as e:
-                PrintStyle.error(f"[pf_reply] Failed to send: {format_error(e)}")
+                    # Inspect response for partial failures (HTTP 202 can still have failedMessages)
+                    failed = result.get("failedMessages", [])
+                    if failed:
+                        for fm in failed:
+                            err = fm.get("error", "unknown error")
+                            PrintStyle.error(
+                                f"[pf_reply] ⚠️ Send failed for contact {fm.get('contactId', '?')}: {err}"
+                            )
+                        last_err = Exception(
+                            f"{len(failed)} message(s) failed: "
+                            + ", ".join(fm.get("error", "unknown") for fm in failed)
+                        )
+                    else:
+                        PrintStyle.info(
+                            f"[pf_reply] ✅ Sent response chunk ({messenger}, {len(chunk)} chars)"
+                        )
+                        last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    if attempt == 1:
+                        await asyncio.sleep(1)
+
+            if last_err:
+                PrintStyle.error(
+                    f"[pf_reply] Failed to send chunk after retry: {format_error(last_err)}"
+                )
+                context.log.log(
+                    type="error",
+                    content=f"⚠️ Failed to send reply to {messenger} "
+                    f"(chunk dropped): {last_err}",
+                )
 
         # Clear routing metadata after send
         context.data.pop("pf_routing", None)
