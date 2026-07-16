@@ -181,6 +181,38 @@ def _try_load_chat_from_disk(ctx_id: str) -> AgentContext | None:
         return None
 
 
+def _cleanup_stale_state_mappings() -> None:
+    """Remove state.json entries whose chat directories are missing on disk.
+
+    Called at poller startup to prevent lazy-load failures from creating
+    duplicate threads when a chat dir was lost (e.g. save failure, manual
+    deletion, or deserialization error on a previous run).
+    """
+    from helpers.persist_chat import _get_chat_file_path
+
+    with _state_lock:
+        state = _load_state()
+        chats = state.get("chats", {})
+        stale_keys = []
+        for mapping_key, ctx_id in chats.items():
+            chat_path = _get_chat_file_path(ctx_id)
+            if not os.path.isfile(chat_path):
+                stale_keys.append(mapping_key)
+
+        if not stale_keys:
+            return
+
+        for key in stale_keys:
+            chats.pop(key, None)
+        _save_state(state)
+        preview = ", ".join(stale_keys[:5])
+        suffix = "..." if len(stale_keys) > 5 else ""
+        PrintStyle.info(
+            f"[pf_channel] 🧹 Cleaned {len(stale_keys)} stale state.json mapping(s) "
+            f"(chat dirs missing on disk): {preview}{suffix}"
+        )
+
+
 def _classify_log_entries(entries: list, prev_agentno: int) -> tuple[str | None, int]:
     """Classify new log entries into a progress-signal category.
 
@@ -782,6 +814,10 @@ async def _poll_loop() -> None:
     except Exception as e:
         PrintStyle.error(f"[pf_channel] ❌ Auth verification failed: {format_error(e)}")
         return
+
+    # Clean stale state.json mappings: remove entries whose chat dirs are missing
+    # on disk. This prevents lazy-load failures from creating duplicate threads.
+    _cleanup_stale_state_mappings()
 
     while True:
         try:
