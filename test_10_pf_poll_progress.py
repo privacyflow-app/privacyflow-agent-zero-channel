@@ -5,7 +5,7 @@ Tests cover:
   1. _classify_log_entries() — signal classification from log entries
   2. _detect_meta_command() — suppress/resume phrase detection
   3. _start_progress_timer() — full event-loop behavior:
-     - Initial message sent after initial_delay
+     - Initial message sent after observation window
      - Event-driven messages fire on log activity (subagent, tool, synthesizing)
      - Throttling: min_interval respected between messages
      - Escalating fallback schedule (short → medium → long → hours → deep)
@@ -377,7 +377,7 @@ class TestProgressTimerDisabled(unittest.TestCase):
         with patch.object(asyncio, "create_task") as create_task, \
              patch("builtins.open", MagicMock(side_effect=FileNotFoundError)), \
              patch.object(mod, "_PROGRESS_DEFAULTS", {
-                 "enabled": False, "initial_delay": 0, "min_interval": 0,
+                 "enabled": False, "observation_window": 0, "min_interval": 0,
                  "poll_interval": 0, "fallback_schedule": [],
                  "messages": {},
              }):
@@ -387,12 +387,12 @@ class TestProgressTimerDisabled(unittest.TestCase):
 
 
 class TestProgressTimerInitialMessage(unittest.TestCase):
-    """Initial message sent after initial_delay."""
+    """Initial message sent after observation window."""
 
     def setUp(self):
         self._orig = mod._PROGRESS_DEFAULTS
         mod._PROGRESS_DEFAULTS = {
-            "enabled": True, "initial_delay": 0, "min_interval": 999,
+            "enabled": True, "observation_window": 0, "min_interval": 999,
             "poll_interval": 0,
             "fallback_schedule": [(999999, 999, "fallback_short")],
             "messages": _PROGRESS_DEFAULTS["messages"],
@@ -426,7 +426,7 @@ class TestProgressTimerEventDriven(unittest.TestCase):
     def setUp(self):
         self._orig = mod._PROGRESS_DEFAULTS
         mod._PROGRESS_DEFAULTS = {
-            "enabled": True, "initial_delay": 0, "min_interval": 0,
+            "enabled": True, "observation_window": 0, "min_interval": 0,
             "poll_interval": 0,
             "fallback_schedule": [(999999, 999, "fallback_short")],
             "messages": _PROGRESS_DEFAULTS["messages"],
@@ -453,7 +453,7 @@ class TestProgressTimerEventDriven(unittest.TestCase):
                  patch.object(asyncio, "to_thread", fake_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
-                ctx.is_running.side_effect = [True, True, True, True, False]
+                ctx.is_running.side_effect = [True] * 10 + [False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
@@ -481,7 +481,7 @@ class TestProgressTimerEventDriven(unittest.TestCase):
                  patch.object(asyncio, "to_thread", fake_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
-                ctx.is_running.side_effect = [True, True, True, True, False]
+                ctx.is_running.side_effect = [True] * 10 + [False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
@@ -498,7 +498,7 @@ class TestProgressTimerFallback(unittest.TestCase):
         self._orig = mod._PROGRESS_DEFAULTS
         # Very short schedule for testing
         mod._PROGRESS_DEFAULTS = {
-            "enabled": True, "initial_delay": 0, "min_interval": 999,
+            "enabled": True, "observation_window": 0, "min_interval": 999,
             "poll_interval": 0,
             "fallback_schedule": [
                 (10, 0, "fallback_short"),       # 0-10s elapsed: every 0s
@@ -523,7 +523,7 @@ class TestProgressTimerFallback(unittest.TestCase):
                  patch.object(asyncio, "to_thread", fake_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
-                ctx.is_running.side_effect = [True, True, True, True, False]
+                ctx.is_running.side_effect = [True] * 10 + [False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
@@ -554,7 +554,7 @@ class TestProgressTimerFallback(unittest.TestCase):
                  patch("time.monotonic", fake_monotonic):
                 _start_progress_timer(ctx, "c1", "signal", None)
                 # initial + poll(t=5, short) + poll(t=10, medium) + poll(t=15, medium) + exit
-                ctx.is_running.side_effect = [True, True, True, True, False]
+                ctx.is_running.side_effect = [True] * 10 + [False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
@@ -604,9 +604,9 @@ class TestProgressTimerSuppressFlag(unittest.TestCase):
     def setUp(self):
         self._orig = mod._PROGRESS_DEFAULTS
         mod._PROGRESS_DEFAULTS = {
-            "enabled": True, "initial_delay": 0, "min_interval": 0,
+            "enabled": True, "observation_window": 0, "min_interval": 0,
             "poll_interval": 0,
-            "fallback_schedule": [(999999, 0, "fallback_short")],
+            "fallback_schedule": [(999999, 999, "fallback_short")],
             "messages": _PROGRESS_DEFAULTS["messages"],
         }
 
@@ -672,8 +672,10 @@ class TestProgressTimerSuppressFlag(unittest.TestCase):
 
         async def sleeping_sleep(_secs):
             sleep_calls[0] += 1
-            # After initial message (sleep call 1), set flag on first poll
-            if sleep_calls[0] == 2:
+            # Observation window is 0, so ack is sent immediately without
+            # any sleep. The first sleep is the main loop's first poll —
+            # set the flag then so the main loop exits before sending more.
+            if sleep_calls[0] == 1:
                 ctx.data["pf_no_updates"] = True
 
         async def runner():
@@ -681,13 +683,191 @@ class TestProgressTimerSuppressFlag(unittest.TestCase):
                  patch.object(asyncio, "to_thread", fake_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
-                ctx.is_running.side_effect = [True, True, True, False]
+                ctx.is_running.side_effect = [True] * 10 + [False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
         # Only the initial message should have been sent
         self.assertEqual(len(sent), 1)
         self.assertIn("On it", sent[0][1])
+
+
+class TestObservationWindow(unittest.TestCase):
+    """Tests for the dynamic observation window that replaces the fixed initial delay.
+
+    The observation loop watches the agent's log for ~10s before deciding
+    whether to send an initial ack:
+      - type="response" entry → skip ack (answer is coming)
+      - tool/subagent entry → send ack immediately (agent is working)
+      - rate-limit detected → send rate-limited ack
+      - no entries after window expires → send initial ack (long inference)
+      - agent finishes during observation → no ack
+      - suppress flag set during observation → exit immediately
+    """
+
+    def setUp(self):
+        self._orig = mod._PROGRESS_DEFAULTS
+        mod._PROGRESS_DEFAULTS = {
+            "enabled": True, "observation_window": 10, "min_interval": 999,
+            "poll_interval": 0,
+            "fallback_schedule": [(999999, 999, "fallback_short")],
+            "messages": _PROGRESS_DEFAULTS["messages"],
+        }
+
+    def tearDown(self):
+        mod._PROGRESS_DEFAULTS = self._orig
+
+    def test_ack_skipped_when_response_during_observation(self):
+        """Agent produces a 'response' entry during observation → skip ack."""
+        ctx = _make_context()
+        sent = []
+        sleep_calls = [0]
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        async def sleeping_sleep(_secs):
+            sleep_calls[0] += 1
+            if sleep_calls[0] == 1:
+                ctx.log.add(FakeLogEntry("response", content="partial answer..."))
+
+        async def runner():
+            with patch.object(asyncio, "sleep", sleeping_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True] * 10 + [False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        # No "On it" message — the agent is already responding
+        self.assertFalse(any("On it" in m for m in [s[1] for s in sent]),
+                         f"Expected no initial ack when response is imminent: {sent}")
+
+    def test_ack_sent_when_tool_during_observation(self):
+        """Agent produces a 'tool' entry during observation → send ack immediately."""
+        ctx = _make_context()
+        sent = []
+        sleep_calls = [0]
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        async def sleeping_sleep(_secs):
+            sleep_calls[0] += 1
+            if sleep_calls[0] == 1:
+                ctx.log.add(FakeLogEntry("tool"))
+
+        async def runner():
+            with patch.object(mod, "_get_verbosity", return_value="chatty"), \
+                 patch.object(asyncio, "sleep", sleeping_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True] * 10 + [False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        msgs = [s[1] for s in sent]
+        self.assertTrue(any("On it" in m for m in msgs),
+                        f"Expected initial ack when tool activity detected: {msgs}")
+
+    def test_ack_sent_when_rate_limited_during_observation(self):
+        """Rate-limit detected during observation → send rate-limited ack."""
+        ctx = _make_context()
+        ctx.log.progress = "Rate limit reached, waiting..."
+        sent = []
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        async def runner():
+            with patch.object(mod, "_get_verbosity", return_value="chatty"), \
+                 patch.object(asyncio, "sleep", _no_op_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True] * 10 + [False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        msgs = [s[1] for s in sent]
+        self.assertTrue(any("thinking this through" in m for m in msgs),
+                        f"Expected rate-limited ack: {msgs}")
+
+    def test_ack_sent_when_observation_window_expires(self):
+        """No log entries after observation window → send initial ack (long inference)."""
+        ctx = _make_context()
+        sent = []
+        mock_time = [0.0]
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        def fake_monotonic():
+            return mock_time[0]
+
+        async def time_sleep(_secs):
+            mock_time[0] += 15  # advance past observation_window (10s)
+
+        async def runner():
+            with patch.object(asyncio, "sleep", time_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)), \
+                 patch("time.monotonic", fake_monotonic):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True] * 10 + [False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        msgs = [s[1] for s in sent]
+        self.assertTrue(any("On it" in m for m in msgs),
+                        f"Expected initial ack after observation window: {msgs}")
+
+    def test_no_ack_when_agent_finishes_during_observation(self):
+        """Agent finishes during observation → no ack, loop exits."""
+        ctx = _make_context(is_running_seq=[True, False])
+        sent = []
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        async def runner():
+            with patch.object(asyncio, "sleep", _no_op_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        self.assertEqual(sent, [],
+                         f"Expected no messages when agent finishes during observation: {sent}")
+
+    def test_suppress_flag_respected_during_observation(self):
+        """pf_no_updates set during observation → loop exits, no ack."""
+        ctx = _make_context()
+        sent = []
+        sleep_calls = [0]
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        async def sleeping_sleep(_secs):
+            sleep_calls[0] += 1
+            if sleep_calls[0] == 1:
+                ctx.data["pf_no_updates"] = True
+
+        async def runner():
+            with patch.object(asyncio, "sleep", sleeping_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True] * 10 + [False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        self.assertEqual(sent, [],
+                         f"Expected no messages when suppressed during observation: {sent}")
 
 
 class TestProgressTimerCancelsExisting(unittest.TestCase):
@@ -721,7 +901,7 @@ class TestProgressTimerRateLimited(unittest.TestCase):
     def setUp(self):
         self._orig = mod._PROGRESS_DEFAULTS
         mod._PROGRESS_DEFAULTS = {
-            "enabled": True, "initial_delay": 0, "min_interval": 0,
+            "enabled": True, "observation_window": 0, "min_interval": 0,
             "poll_interval": 0,
             "fallback_schedule": [(999999, 999, "fallback_short")],
             "messages": _PROGRESS_DEFAULTS["messages"],
@@ -743,7 +923,7 @@ class TestProgressTimerRateLimited(unittest.TestCase):
                  patch.object(asyncio, "to_thread", fake_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
-                ctx.is_running.side_effect = [True, True, True, True, False]
+                ctx.is_running.side_effect = [True] * 10 + [False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
@@ -796,7 +976,7 @@ class TestVerbosityNormal(unittest.TestCase):
     def setUp(self):
         self._orig = mod._PROGRESS_DEFAULTS
         mod._PROGRESS_DEFAULTS = {
-            "enabled": True, "initial_delay": 0, "min_interval": 0,
+            "enabled": True, "observation_window": 0, "min_interval": 0,
             "poll_interval": 0,
             "fallback_schedule": [(999999, 999, "fallback_short")],
             "messages": _PROGRESS_DEFAULTS["messages"],
@@ -825,7 +1005,7 @@ class TestVerbosityNormal(unittest.TestCase):
                  patch.object(asyncio, "to_thread", fake_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
-                ctx.is_running.side_effect = [True, True, True, True, False]
+                ctx.is_running.side_effect = [True] * 10 + [False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
@@ -851,7 +1031,7 @@ class TestVerbosityNormal(unittest.TestCase):
                  patch.object(asyncio, "to_thread", fake_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
-                ctx.is_running.side_effect = [True, True, True, True, False]
+                ctx.is_running.side_effect = [True] * 10 + [False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
@@ -879,7 +1059,7 @@ class TestVerbosityNormal(unittest.TestCase):
                  patch.object(asyncio, "to_thread", fake_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
-                ctx.is_running.side_effect = [True, True, True, True, False]
+                ctx.is_running.side_effect = [True] * 10 + [False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
@@ -907,7 +1087,7 @@ class TestVerbosityNormal(unittest.TestCase):
                  patch.object(asyncio, "to_thread", fake_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
-                ctx.is_running.side_effect = [True, True, True, True, False]
+                ctx.is_running.side_effect = [True] * 10 + [False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())
@@ -922,7 +1102,7 @@ class TestVerbosityChatty(unittest.TestCase):
     def setUp(self):
         self._orig = mod._PROGRESS_DEFAULTS
         mod._PROGRESS_DEFAULTS = {
-            "enabled": True, "initial_delay": 0, "min_interval": 0,
+            "enabled": True, "observation_window": 0, "min_interval": 0,
             "poll_interval": 0,
             "fallback_schedule": [(999999, 999, "fallback_short")],
             "messages": _PROGRESS_DEFAULTS["messages"],
@@ -951,7 +1131,7 @@ class TestVerbosityChatty(unittest.TestCase):
                  patch.object(asyncio, "to_thread", fake_to_thread), \
                  patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
                 _start_progress_timer(ctx, "c1", "signal", None)
-                ctx.is_running.side_effect = [True, True, True, True, False]
+                ctx.is_running.side_effect = [True] * 10 + [False]
                 await ctx.data["pf_progress_task"]
 
         asyncio.run(runner())

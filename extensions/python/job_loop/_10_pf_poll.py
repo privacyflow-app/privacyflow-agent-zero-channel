@@ -63,7 +63,7 @@ _poll_task: asyncio.Task | None = None
 # keep the default message list in one place (no duplicated literals).
 _PROGRESS_DEFAULTS = {
     "enabled": True,
-    "initial_delay": 5,
+    "observation_window": 10,
     "min_interval": 15,
     "poll_interval": 3,
     "fallback_schedule": [
@@ -381,7 +381,7 @@ def _start_progress_timer(
     if not pm_cfg.get("enabled", defaults["enabled"]):
         return
 
-    initial_delay = pm_cfg.get("initial_delay", defaults["initial_delay"])
+    observation_window = pm_cfg.get("observation_window", defaults["observation_window"])
     min_interval = pm_cfg.get("min_interval", defaults["min_interval"])
     poll_interval = pm_cfg.get("poll_interval", defaults["poll_interval"])
     fallback_schedule = pm_cfg.get(
@@ -448,14 +448,72 @@ def _start_progress_timer(
             last_log_index = log_len
             prev_agentno = 0
 
-            # Initial acknowledgement after delay
-            await asyncio.sleep(initial_delay)
-            if not context.is_running():
-                return
-            # Respect suppress flag set before the loop starts
-            if context.data.get("pf_no_updates"):
-                return
-            await _send(_get_msg("initial"), "initial")
+            # Phase 1: Observation window — watch the agent's log for up to
+            # observation_window seconds before deciding whether to send an
+            # initial ack. This prevents "On it..." from firing for quick
+            # responses (agent produces a "response" entry → skip ack) while
+            # still acknowledging complex tasks (tool/subagent entries → send
+            # ack immediately, or no entries after window → send ack).
+            #
+            # Note: entries read during observation are NOT consumed —
+            # last_log_index is restored after observation so the main loop
+            # can re-read them for event-driven messages.
+            obs_base_index = last_log_index
+            ack_sent = False
+            obs_start = time.monotonic()
+            while (
+                time.monotonic() - obs_start < observation_window
+                and context.is_running()
+            ):
+                if context.data.get("pf_no_updates"):
+                    return
+                await asyncio.sleep(poll_interval)
+                if not context.is_running():
+                    return
+
+                new_entries, current_len = _read_log_safe(context, obs_base_index)
+                # Update prev_agentno from observations (sub-agent tracking)
+                # but DON'T advance last_log_index — main loop re-reads these
+                if new_entries:
+                    _, prev_agentno = _classify_log_entries(new_entries, prev_agentno)
+
+                # Check for rate-limit
+                progress_text = ""
+                try:
+                    progress_text = context.log.progress or ""
+                except Exception:
+                    pass
+                is_rate_limited = "rate" in progress_text.lower() or "limit" in progress_text.lower()
+
+                if new_entries:
+                    # Classify what the agent is doing
+                    signal, _ = _classify_log_entries(new_entries, prev_agentno)
+                    if signal == "synthesizing":
+                        # Agent is already responding — skip ack, answer is coming
+                        ack_sent = True
+                        break
+                    elif signal is not None:
+                        # Agent is working (tool, subagent, etc.) — send ack now
+                        await _send(_get_msg("initial"), "initial")
+                        ack_sent = True
+                        break
+                elif is_rate_limited:
+                    # Agent is rate-limited — send a rate-limit ack
+                    if verbosity != "normal":
+                        await _send(_get_msg("rate_limited"), "rate_limited")
+                    else:
+                        await _send(_get_msg("initial"), "initial")
+                    ack_sent = True
+                    break
+
+            # Observation window expired with no entries — agent is in long
+            # inference. Send the initial ack so the user knows the message
+            # was received.
+            if not ack_sent and context.is_running():
+                if not context.data.get("pf_no_updates"):
+                    await _send(_get_msg("initial"), "initial")
+                    ack_sent = True
+
             last_msg_time = time.monotonic()
             task_start = last_msg_time
 

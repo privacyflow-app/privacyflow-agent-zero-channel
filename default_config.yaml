@@ -4,7 +4,7 @@ pf_app_id: ""
 progress_verbosity: "normal"
 progress_messages:
   enabled: true
-  initial_delay: 5
+  observation_window: 10
   min_interval: 15
   poll_interval: 3
   fallback_schedule:
