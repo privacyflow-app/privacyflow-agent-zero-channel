@@ -1,6 +1,7 @@
 pf_api_base: ""
 pf_api_key: ""
 pf_app_id: ""
+progress_verbosity: "normal"
 progress_messages:
   enabled: true
   initial_delay: 5

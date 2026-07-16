@@ -57,8 +57,13 @@ from _10_pf_poll import (  # noqa: E402
     _detect_meta_command,
     _handle_meta_command,
     _start_progress_timer,
+    _get_verbosity,
     _PROGRESS_DEFAULTS,
 )
+
+# Default _get_verbosity to "chatty" so pre-existing tests retain their
+# original behavior. Tests that need a specific verbosity patch it explicitly.
+mod._get_verbosity = lambda: "chatty"
 
 
 class FakeLogEntry:
@@ -455,7 +460,7 @@ class TestProgressTimerEventDriven(unittest.TestCase):
         msgs = [s[1] for s in sent]
         self.assertGreaterEqual(len(msgs), 2)
         self.assertIn("On it", msgs[0])
-        self.assertTrue(any("looking into this" in m for m in msgs),
+        self.assertTrue(any("got a few things" in m for m in msgs),
                         f"Expected tool_activity in {msgs}")
 
     def test_subagent_triggers_message(self):
@@ -745,6 +750,214 @@ class TestProgressTimerRateLimited(unittest.TestCase):
         msgs = [s[1] for s in sent]
         self.assertTrue(any("thinking this through" in m for m in msgs),
                         f"Expected rate_limited message in {msgs}")
+
+
+# ---------------------------------------------------------------------------
+# Tests for verbosity (mute/normal/chatty)
+# ---------------------------------------------------------------------------
+
+
+class TestGetVerbosity(unittest.TestCase):
+    """Tests for the _get_verbosity() helper."""
+
+    def test_defaults_to_normal_when_no_config(self):
+        # When plugins.get_plugin_config returns None, defaults to "normal"
+        _helpers_mock.plugins.get_plugin_config.return_value = None
+        result = _get_verbosity()
+        self.assertEqual(result, "normal")
+
+    def test_returns_configured_value(self):
+        _helpers_mock.plugins.get_plugin_config.return_value = {"progress_verbosity": "chatty"}
+        result = _get_verbosity()
+        self.assertEqual(result, "chatty")
+
+    def test_returns_normal_when_key_absent(self):
+        _helpers_mock.plugins.get_plugin_config.return_value = {"other_key": "value"}
+        result = _get_verbosity()
+        self.assertEqual(result, "normal")
+
+
+class TestVerbosityMute(unittest.TestCase):
+    """Mute mode: _start_progress_timer returns immediately, no task created."""
+
+    def test_mute_no_task_created(self):
+        ctx = _make_context()
+        with patch.object(mod, "_get_verbosity", return_value="mute"), \
+             patch.object(asyncio, "create_task") as create_task:
+            _start_progress_timer(ctx, "c1", "signal", None)
+
+        create_task.assert_not_called()
+        self.assertNotIn("pf_progress_task", ctx.data)
+
+
+class TestVerbosityNormal(unittest.TestCase):
+    """Normal mode: filters tool_activity + rate_limited, doubles intervals."""
+
+    def setUp(self):
+        self._orig = mod._PROGRESS_DEFAULTS
+        mod._PROGRESS_DEFAULTS = {
+            "enabled": True, "initial_delay": 0, "min_interval": 0,
+            "poll_interval": 0,
+            "fallback_schedule": [(999999, 999, "fallback_short")],
+            "messages": _PROGRESS_DEFAULTS["messages"],
+        }
+
+    def tearDown(self):
+        mod._PROGRESS_DEFAULTS = self._orig
+
+    def test_tool_activity_filtered_in_normal(self):
+        """tool_activity signal is skipped in normal mode."""
+        ctx = _make_context()
+        sent = []
+        sleep_calls = [0]
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        async def sleeping_sleep(_secs):
+            sleep_calls[0] += 1
+            if sleep_calls[0] == 2:
+                ctx.log.add(FakeLogEntry("tool"))
+
+        async def runner():
+            with patch.object(mod, "_get_verbosity", return_value="normal"), \
+                 patch.object(asyncio, "sleep", sleeping_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True, True, True, True, False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        msgs = [s[1] for s in sent]
+        # Initial message sent, but tool_activity should NOT follow
+        self.assertGreaterEqual(len(msgs), 1)
+        self.assertIn("On it", msgs[0])
+        self.assertFalse(any("got a few things" in m for m in msgs),
+                         f"tool_activity should be filtered in normal mode: {msgs}")
+
+    def test_rate_limited_filtered_in_normal(self):
+        """rate_limited signal is skipped in normal mode."""
+        ctx = _make_context()
+        ctx.log.progress = "Rate limit reached, waiting..."
+        sent = []
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        async def runner():
+            with patch.object(mod, "_get_verbosity", return_value="normal"), \
+                 patch.object(asyncio, "sleep", _no_op_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True, True, True, True, False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        msgs = [s[1] for s in sent]
+        self.assertFalse(any("thinking this through" in m for m in msgs),
+                         f"rate_limited should be filtered in normal mode: {msgs}")
+
+    def test_subagent_not_filtered_in_normal(self):
+        """subagent signal still fires in normal mode (key milestone)."""
+        ctx = _make_context()
+        sent = []
+        sleep_calls = [0]
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        async def sleeping_sleep(_secs):
+            sleep_calls[0] += 1
+            if sleep_calls[0] == 2:
+                ctx.log.add(FakeLogEntry("subagent"))
+
+        async def runner():
+            with patch.object(mod, "_get_verbosity", return_value="normal"), \
+                 patch.object(asyncio, "sleep", sleeping_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True, True, True, True, False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        msgs = [s[1] for s in sent]
+        self.assertTrue(any("Digging" in m for m in msgs),
+                        f"subagent should fire in normal mode: {msgs}")
+
+    def test_synthesizing_not_filtered_in_normal(self):
+        """synthesizing signal still fires in normal mode (key milestone)."""
+        ctx = _make_context()
+        sent = []
+        sleep_calls = [0]
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        async def sleeping_sleep(_secs):
+            sleep_calls[0] += 1
+            if sleep_calls[0] == 2:
+                ctx.log.add(FakeLogEntry("response", content="partial..."))
+
+        async def runner():
+            with patch.object(mod, "_get_verbosity", return_value="normal"), \
+                 patch.object(asyncio, "sleep", sleeping_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True, True, True, True, False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        msgs = [s[1] for s in sent]
+        self.assertTrue(any("putting this together" in m for m in msgs),
+                        f"synthesizing should fire in normal mode: {msgs}")
+
+
+class TestVerbosityChatty(unittest.TestCase):
+    """Chatty mode: all signals fire (current behavior, unchanged)."""
+
+    def setUp(self):
+        self._orig = mod._PROGRESS_DEFAULTS
+        mod._PROGRESS_DEFAULTS = {
+            "enabled": True, "initial_delay": 0, "min_interval": 0,
+            "poll_interval": 0,
+            "fallback_schedule": [(999999, 999, "fallback_short")],
+            "messages": _PROGRESS_DEFAULTS["messages"],
+        }
+
+    def tearDown(self):
+        mod._PROGRESS_DEFAULTS = self._orig
+
+    def test_tool_activity_fires_in_chatty(self):
+        """tool_activity signal fires in chatty mode (not filtered)."""
+        ctx = _make_context()
+        sent = []
+        sleep_calls = [0]
+
+        async def fake_to_thread(fn, *args):
+            sent.append(args)
+
+        async def sleeping_sleep(_secs):
+            sleep_calls[0] += 1
+            if sleep_calls[0] == 2:
+                ctx.log.add(FakeLogEntry("tool"))
+
+        async def runner():
+            with patch.object(mod, "_get_verbosity", return_value="chatty"), \
+                 patch.object(asyncio, "sleep", sleeping_sleep), \
+                 patch.object(asyncio, "to_thread", fake_to_thread), \
+                 patch("builtins.open", MagicMock(side_effect=FileNotFoundError)):
+                _start_progress_timer(ctx, "c1", "signal", None)
+                ctx.is_running.side_effect = [True, True, True, True, False]
+                await ctx.data["pf_progress_task"]
+
+        asyncio.run(runner())
+        msgs = [s[1] for s in sent]
+        self.assertTrue(any("got a few things" in m for m in msgs),
+                        f"tool_activity should fire in chatty mode: {msgs}")
 
 
 # ---------------------------------------------------------------------------

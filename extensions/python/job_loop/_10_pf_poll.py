@@ -319,6 +319,24 @@ async def _handle_meta_command(
     return False
 
 
+def _get_verbosity() -> str:
+    """Read progress verbosity from the A0 plugin config.
+
+    Returns "mute", "normal", or "chatty". Falls back to "normal" if
+    unset or if the A0 config API is unavailable.
+
+    This reads from the live plugin config (set via the webui form),
+    NOT from default_config.yaml — so the <select> in the config form
+    actually takes effect.
+    """
+    try:
+        from helpers import plugins
+        config = plugins.get_plugin_config("privacyflow_channel") or {}
+        return config.get("progress_verbosity", "normal")
+    except Exception:
+        return "normal"
+
+
 def _start_progress_timer(
     context: AgentContext,
     contact_id: str,
@@ -336,7 +354,18 @@ def _start_progress_timer(
 
     The task is stored on context.data['pf_progress_task'] so _50_pf_reply
     can cancel it when the response is ready.
+
+    Verbosity (from A0 plugin config, set via webui form):
+      mute   — no progress messages at all
+      normal — key milestones only (subagent, synthesizing, reviewing);
+               doubled intervals, skips tool_activity and rate_limited
+      chatty — every step (current full behavior)
     """
+    # Read verbosity from A0 plugin config (webui form), not default_config.yaml
+    verbosity = _get_verbosity()
+    if verbosity == "mute":
+        return
+
     import yaml
 
     # Load config
@@ -358,6 +387,19 @@ def _start_progress_timer(
     fallback_schedule = pm_cfg.get(
         "fallback_schedule", defaults["fallback_schedule"]
     )
+
+    # "normal" verbosity halves the message rate: double the throttle and
+    # fallback intervals. "chatty" uses the raw values. "mute" already returned.
+    if verbosity == "normal":
+        min_interval = min_interval * 2
+        fallback_schedule = [
+            (threshold, interval * 2, key)
+            for threshold, interval, key in fallback_schedule
+        ]
+
+    # Signals to skip in "normal" mode (only major milestones fire)
+    _normal_skip_signals = frozenset({"tool_activity", "rate_limited"})
+
     msg_cfg = pm_cfg.get("messages", defaults["messages"])
     # Merge user-provided messages over defaults so partial overrides work
     messages = {**defaults["messages"], **(msg_cfg if isinstance(msg_cfg, dict) else {})}
@@ -448,6 +490,10 @@ def _start_progress_timer(
                 # Override signal if rate-limited (high priority but below subagent)
                 if is_rate_limited and signal not in ("subagent",):
                     signal = "rate_limited"
+
+                # In "normal" mode, skip minor signals (tool_activity, rate_limited)
+                if verbosity == "normal" and signal in _normal_skip_signals:
+                    signal = None
 
                 if signal and elapsed >= min_interval:
                     await _send(_get_msg(signal), signal)
