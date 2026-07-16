@@ -769,7 +769,7 @@ async def _poll_loop() -> None:
             PrintStyle.error("[pf_channel] ❌ Auth verification failed: API key returned invalid=false")
             return
         app_ids = auth_result.get("appIds", [])
-        configured_app_id = _pf_client._get_app_id()
+        configured_app_id = _pf_client.get_app_id()
         if configured_app_id and configured_app_id not in app_ids:
             PrintStyle.error(
                 f"[pf_channel] ❌ App ID '{configured_app_id}' not authorized. "

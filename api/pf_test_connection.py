@@ -13,7 +13,6 @@ class PfTestConnection(ApiHandler):
     async def process(self, input: dict, request: Request):
         import importlib.util
         import os
-        import traceback
 
         plugin_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..")
@@ -58,7 +57,7 @@ class PfTestConnection(ApiHandler):
             else:
                 checks["health"] = {
                     "ok": False,
-                    "error": f"Server not reachable at {pf_client._get_base_url()}/api/v1/health",
+                    "error": f"Server not reachable at {pf_client.get_base_url()}/api/v1/health",
                 }
                 return {"ok": False, "error": "Health check failed", "checks": checks}
         except Exception as e:
@@ -78,14 +77,14 @@ class PfTestConnection(ApiHandler):
             if "401" in error_msg or "403" in error_msg:
                 error_msg = "Invalid API key — server rejected credentials"
             elif "ConnectionError" in error_msg or "Connection refused" in error_msg:
-                error_msg = f"Cannot connect to {pf_client._get_base_url()}"
+                error_msg = f"Cannot connect to {pf_client.get_base_url()}"
             checks["auth"] = {"ok": False, "error": error_msg}
             return {"ok": False, "error": error_msg, "checks": checks}
 
         # Step 4: Validate app_id is in returned appIds
         try:
             app_ids = auth_result.get("appIds", [])
-            configured_app_id = pf_client._get_app_id()
+            configured_app_id = pf_client.get_app_id()
             if configured_app_id in app_ids:
                 checks["app_id"] = {
                     "ok": True,
