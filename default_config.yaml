@@ -1,3 +1,30 @@
 pf_api_base: ""
 pf_api_key: ""
 pf_app_id: ""
+progress_verbosity: "normal"
+progress_messages:
+  enabled: true
+  observation_window: 10
+  min_interval: 15
+  poll_interval: 3
+  fallback_schedule:
+    - [300, 45, "fallback_short"]
+    - [900, 120, "fallback_medium"]
+    - [3600, 300, "fallback_long"]
+    - [10800, 600, "fallback_hours"]
+    - [999999, 900, "fallback_deep"]
+  messages:
+    initial: "On it, looking into this for you..."
+    subagent: "Digging a bit deeper into this one..."
+    tool_activity: "Still looking into this, got a few things to check..."
+    reviewing: "Found a few leads, just verifying some things..."
+    synthesizing: "Getting close — putting this together now..."
+    rate_limited: "Still here, just thinking this through..."
+    suppress_ack: "Got it, I'll hold off on the pings. Just say \"update me\" when you want them back."
+    resume_ack: "Back on it — I'll keep you posted."
+    resume_idle_ack: "Sure — nothing's running right now, but I'll keep you posted on the next one."
+    fallback_short: "Still on this, it's a complex one — appreciate the patience..."
+    fallback_medium: "Still working at this, been a few minutes now..."
+    fallback_long: "Still going, about {minutes} minutes in — this one's a deep dive..."
+    fallback_hours: "Still on this task, about {hours} hour(s) in. It's a big one..."
+    fallback_deep: "This one's been running for about {hours} hours. Still working away at it..."
