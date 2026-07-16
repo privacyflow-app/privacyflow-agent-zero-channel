@@ -77,6 +77,25 @@
                     </div>
                 </div>
 
+                <div class="field">
+                    <div class="field-label">
+                        <div class="field-title">Progress Updates</div>
+                        <div class="field-description">
+                            How often the agent sends check-in messages while working on a task.
+                            <strong>Mute</strong>: no progress messages.
+                            <strong>Normal</strong>: key milestones only (sub-agents, synthesis, extended waits).
+                            <strong>Chatty</strong>: every step (tool calls, rate limits, all milestones).
+                        </div>
+                    </div>
+                    <div class="field-control">
+                        <select x-model="config.progress_verbosity">
+                            <option value="normal">Normal</option>
+                            <option value="chatty">Chatty</option>
+                            <option value="mute">Mute</option>
+                        </select>
+                    </div>
+                </div>
+
                 <!-- Test Connection Button -->
                 <div class="field" style="margin-top: 1rem;">
                     <div class="field-label">
