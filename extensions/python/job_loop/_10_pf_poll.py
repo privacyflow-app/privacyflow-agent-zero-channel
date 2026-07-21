@@ -41,6 +41,15 @@ from agent import AgentContext, UserMessage
 _PLUGIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 
+def _is_plugin_enabled() -> bool:
+    """Check if this plugin is currently enabled (toggle state)."""
+    try:
+        from helpers import plugins as _plugins
+        return _plugins.get_toggle_state("privacyflow_channel") == "enabled"
+    except Exception:
+        return True  # If check fails, don't kill the poller
+
+
 def _load_helper(name: str):
     path = os.path.join(_PLUGIN_DIR, "helpers", f"{name}.py")
     spec = importlib.util.spec_from_file_location(f"privacyflow_channel.helpers.{name}", path)
@@ -820,6 +829,11 @@ async def _poll_loop() -> None:
     _cleanup_stale_state_mappings()
 
     while True:
+        # Check if plugin is still enabled — stop if disabled
+        if not _is_plugin_enabled():
+            PrintStyle.info("[pf_channel] 🛑 Plugin disabled, stopping poller")
+            return
+
         try:
             response = await asyncio.to_thread(poll_messages, 10)
             messages = response.get("messages", [])
