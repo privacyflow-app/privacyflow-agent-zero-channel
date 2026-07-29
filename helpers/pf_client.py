@@ -46,7 +46,7 @@ def _get_headers() -> dict:
     return {"Authorization": f"Bearer {_get_api_key()}"}
 
 
-def _resolve(
+def resolve(
     api_base: Optional[str] = None,
     api_key: Optional[str] = None,
     app_id: Optional[str] = None,
@@ -70,7 +70,7 @@ def is_configured(
     api_key: Optional[str] = None,
 ) -> bool:
     """Check if all required credentials are present."""
-    cfg = _resolve(api_base, api_key)
+    cfg = resolve(api_base, api_key)
     return bool(cfg["pf_api_base"] and cfg["pf_api_key"])
 
 
@@ -79,7 +79,7 @@ def health_check(
     api_key: Optional[str] = None,
 ) -> bool:
     """GET /api/v1/health"""
-    cfg = _resolve(api_base, api_key)
+    cfg = resolve(api_base, api_key)
     try:
         resp = requests.get(f"{cfg['pf_api_base']}/api/v1/health", timeout=10)
         return resp.ok
@@ -92,7 +92,7 @@ def verify_auth(
     api_key: Optional[str] = None,
 ) -> dict:
     """GET /api/v1/auth/verify"""
-    cfg = _resolve(api_base, api_key)
+    cfg = resolve(api_base, api_key)
     resp = requests.get(
         f"{cfg['pf_api_base']}/api/v1/auth/verify",
         headers={"Authorization": f"Bearer {cfg['pf_api_key']}"},

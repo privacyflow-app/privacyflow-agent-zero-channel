@@ -56,7 +56,7 @@ class PfTestConnection(ApiHandler):
             checks["configured"] = {"ok": False, "error": str(e)}
             return {"ok": False, "error": str(e), "checks": checks}
 
-        resolved = pf_client._resolve(api_base, api_key, app_id)
+        resolved = pf_client.resolve(api_base, api_key, app_id)
         base_url = resolved["pf_api_base"]
         configured_app_id = resolved["pf_app_id"]
 
