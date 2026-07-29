@@ -46,26 +46,56 @@ def _get_headers() -> dict:
     return {"Authorization": f"Bearer {_get_api_key()}"}
 
 
-def is_configured() -> bool:
-    """Check if all required credentials are present."""
+def _resolve(
+    api_base: Optional[str] = None,
+    api_key: Optional[str] = None,
+    app_id: Optional[str] = None,
+) -> dict:
+    """Resolve credentials with explicit args taking precedence over saved config / env.
+
+    The WebUI "Test Connection" button passes the values typed into the form
+    before they are saved, so the test validates what the user entered rather
+    than the last-saved config.
+    """
     cfg = _get_config()
+    return {
+        "pf_api_base": (api_base or cfg["pf_api_base"]).rstrip("/"),
+        "pf_api_key": api_key or cfg["pf_api_key"],
+        "pf_app_id": app_id or cfg["pf_app_id"],
+    }
+
+
+def is_configured(
+    api_base: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> bool:
+    """Check if all required credentials are present."""
+    cfg = _resolve(api_base, api_key)
     return bool(cfg["pf_api_base"] and cfg["pf_api_key"])
 
 
-def health_check() -> bool:
+def health_check(
+    api_base: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> bool:
     """GET /api/v1/health"""
+    cfg = _resolve(api_base, api_key)
     try:
-        resp = requests.get(f"{get_base_url()}/api/v1/health", timeout=10)
+        resp = requests.get(f"{cfg['pf_api_base']}/api/v1/health", timeout=10)
         return resp.ok
     except Exception:
         return False
 
 
-def verify_auth() -> dict:
+def verify_auth(
+    api_base: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> dict:
     """GET /api/v1/auth/verify"""
+    cfg = _resolve(api_base, api_key)
     resp = requests.get(
-        f"{get_base_url()}/api/v1/auth/verify",
-        headers=_get_headers(),
+        f"{cfg['pf_api_base']}/api/v1/auth/verify",
+        headers={"Authorization": f"Bearer {cfg['pf_api_key']}"},
         timeout=10,
     )
     resp.raise_for_status()

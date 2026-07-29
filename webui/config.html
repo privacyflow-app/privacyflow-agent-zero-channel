@@ -16,7 +16,7 @@
                   const resp = await globalThis.fetchApi('/plugins/privacyflow_channel/pf_test_connection', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({})
+                    body: JSON.stringify(config)
                   });
                   context.pfTestResult = await resp.json();
                 } catch (e) {
