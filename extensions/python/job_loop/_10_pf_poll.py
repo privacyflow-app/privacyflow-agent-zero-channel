@@ -67,6 +67,11 @@ send_message = _pf_client.send_message
 POLL_INTERVAL_SEC = 3
 _poll_task: asyncio.Task | None = None
 
+# Suppresses repeat "not configured" warnings across job_loop ticks (the
+# poller extension only loads when the plugin is enabled, so this surfaces the
+# other common silent-failure: enabled but missing config).
+_not_configured_warned: bool = False
+
 # Default progress-message config. `default_config.yaml` is the source of
 # truth when present; these constants serve as the documented fallback and
 # keep the default message list in one place (no duplicated literals).
@@ -852,11 +857,22 @@ class PfPoller(Extension):
     """Start the PrivacyFlow poller on job_loop tick."""
 
     async def execute(self, **kwargs: Any) -> None:
-        global _poll_task
+        global _poll_task, _not_configured_warned
 
-        # Don't start if not configured
+        # Don't start if not configured — log once so this state is visible in
+        # the console instead of failing silently every job_loop tick.
         if not is_configured():
+            if not _not_configured_warned:
+                PrintStyle.error(
+                    "[pf_channel] ❌ Not configured — set API Base URL, API Key, and App ID "
+                    "in the plugin settings (or PF_API_BASE / PF_API_KEY / PF_APP_ID env vars). "
+                    "Poller will not start until configured."
+                )
+                _not_configured_warned = True
             return
+
+        # Now configured — reset so a future misconfig warns again.
+        _not_configured_warned = False
 
         # Start poll task if not running or dead
         if _poll_task is None or _poll_task.done():
