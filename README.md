@@ -82,6 +82,7 @@ Messages exceeding the limit are automatically split at paragraph, line, or word
 ## Message Handling
 
 - **One context per contact/group** — mapping is persisted to `state.json`, so the same Agent Zero chat is reused across polls and restarts.
+- **Group replies** — `contactId` is optional for sending. Replies target the app's active messenger group by default (resolved by the messenger, or supplied as a group id); `contactId` is only needed for direct (1:1) replies.
 - **Graceful steering** — if the agent is busy when a new message arrives, it is queued. When the agent finishes, the stale response is discarded and the most recent queued message is dispatched. Older queued messages remain visible in the chat UI.
 - **Send retry** — if a reply chunk fails to send, the plugin retries once after 1 second. If it still fails, the error is logged in the chat so dropped replies are visible.
 - **Per-context locks** — concurrent dispatch tasks for the same contact are serialized to prevent race conditions.

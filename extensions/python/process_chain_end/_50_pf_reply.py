@@ -82,7 +82,10 @@ class PfAutoReply(Extension):
             PrintStyle.info("[pf_reply] No pf_routing metadata, skipping")
             return
 
-        PrintStyle.info(f"[pf_reply] 📤 Processing reply for {pf_routing.get('messenger', '?')} → {pf_routing.get('contact_id', '?')}")
+        PrintStyle.info(
+            f"[pf_reply] 📤 Processing reply for {pf_routing.get('messenger', '?')} "
+            f"→ contact {pf_routing.get('contact_id') or 'n/a'} / group {pf_routing.get('group_id') or 'n/a'}"
+        )
 
         # Cancel any active progress check-in timer
         progress_task = context.data.pop("pf_progress_task", None)
@@ -123,7 +126,7 @@ class PfAutoReply(Extension):
         group_id = pf_routing.get("group_id")
         messenger = pf_routing.get("messenger", "")
 
-        if not contact_id or not messenger:
+        if not messenger or (not contact_id and not group_id):
             PrintStyle.error("[pf_reply] Missing routing metadata")
             return
 

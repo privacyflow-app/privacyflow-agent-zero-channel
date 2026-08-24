@@ -114,18 +114,24 @@ def poll_messages(limit: int = 10) -> dict:
 
 
 def send_message(
-    contact_id: str,
-    message: str,
-    messenger: str,
+    contact_id: Optional[str] = None,
+    message: str = "",
+    messenger: str = "",
     group_id: Optional[str] = None,
 ) -> dict:
-    """POST /api/v1/messages/send"""
+    """POST /api/v1/messages/send
+
+    contactId is OPTIONAL — group delivery is the default target for an app
+    (resolved by the messenger from the app's active group, or supplied as
+    groupId). contactId is only required for direct (1:1) delivery.
+    """
     msg = {
         "appId": get_app_id(),
-        "contactId": contact_id,
         "message": message,
         "messenger": messenger,
     }
+    if contact_id:
+        msg["contactId"] = contact_id
     if group_id:
         msg["groupId"] = group_id
 
