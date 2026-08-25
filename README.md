@@ -39,6 +39,8 @@ git clone https://github.com/privacyflow/privacyflow-agent-zero-channel.git
 
 Copy (or symlink) the cloned folder into your Agent Zero `plugins/` directory.
 
+> **Important:** After installing and configuring the plugin, **restart your Agent Zero instance** for the changes to take effect. The plugin's background poller and reply hooks are loaded at startup, so a restart is required to activate them.
+
 ## Configuration
 
 Configure via the Agent Zero WebUI (recommended) or environment variables.
