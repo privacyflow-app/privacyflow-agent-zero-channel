@@ -49,7 +49,7 @@ Open the PrivacyFlow Channel config screen in Agent Zero and fill in:
 
 | Field | Description |
 |-------|-------------|
-| **API Base URL** | PrivacyFlow public backend API URL (e.g. `https://api.privacyflow.tech`) |
+| **API Base URL** | PrivacyFlow public backend API URL (e.g. `https://api.privacyflow.app`) |
 | **API Key** | Your PrivacyFlow API key (generate from your dashboard under App Settings) |
 | **App ID** | Your PrivacyFlow App ID (one per instance) |
 

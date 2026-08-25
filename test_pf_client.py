@@ -30,7 +30,7 @@ from pf_client import send_message  # noqa: E402
 class TestSendMessagePayload(unittest.TestCase):
     def setUp(self):
         _helpers_mock.plugins.get_plugin_config.return_value = {
-            "pf_api_base": "https://api.privacyflow.tech",
+            "pf_api_base": "https://api.privacyflow.app",
             "pf_api_key": "test-key",
             "pf_app_id": "app-123",
         }
