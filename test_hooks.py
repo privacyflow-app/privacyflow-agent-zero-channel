@@ -28,13 +28,16 @@ def _load_hooks():
     fake_print_style = types.ModuleType("helpers.print_style")
     fake_print_style.PrintStyle = MagicMock()
 
-    # Ensure a 'helpers' package namespace exists and keep its 'plugins'
-    # attribute in sync with the stub so `from helpers import plugins`
-    # binds to the current stub (not a stale one from a prior test).
-    if "helpers" not in sys.modules:
-        sys.modules["helpers"] = types.ModuleType("helpers")
-    sys.modules["helpers"].plugins = fake_plugins
-    sys.modules["helpers"].print_style = fake_print_style
+    # Create a FRESH 'helpers' package namespace and replace it in sys.modules
+    # entirely, rather than mutating an existing module object. Other test
+    # files (test_pf_client.py, test_10_pf_poll_progress.py) install their own
+    # 'helpers' mock into sys.modules and hold a reference to it; mutating it
+    # in place would overwrite their .plugins stub and break their tests when
+    # the suite runs together.
+    fake_helpers = types.ModuleType("helpers")
+    fake_helpers.plugins = fake_plugins
+    fake_helpers.print_style = fake_print_style
+    sys.modules["helpers"] = fake_helpers
     sys.modules["helpers.plugins"] = fake_plugins
     sys.modules["helpers.print_style"] = fake_print_style
 
@@ -45,6 +48,23 @@ def _load_hooks():
 
 
 class SavePluginConfigTests(unittest.TestCase):
+
+
+    def setUp(self):
+        # Snapshot the sys.modules entries that _load_hooks() mutates so we
+        # can restore them after each test. Without this, the stubs leak into
+        # other test files (e.g. test_pf_client.py, test_10_pf_poll_progress.py)
+        # and break their mock setup when the suite runs together.
+        self._saved_modules = {}
+        for key in ("helpers", "helpers.plugins", "helpers.print_style", "hooks"):
+            self._saved_modules[key] = sys.modules.get(key)
+
+    def tearDown(self):
+        for key, value in self._saved_modules.items():
+            if value is None:
+                sys.modules.pop(key, None)
+            else:
+                sys.modules[key] = value
 
     def test_returns_settings_unchanged(self):
         hooks, _ = _load_hooks()

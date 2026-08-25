@@ -27,6 +27,17 @@ jobs:
           pip install pyflakes
           echo "✅ Dependencies installed"
 
+      - name: Install test dependencies
+        run: |
+          pip install -r requirements.txt pytest
+          echo "✅ Test dependencies installed"
+
+      - name: Run test suite
+        run: |
+          echo "Running test suite..."
+          python3 -m pytest -q
+          echo "✅ All tests passed"
+
       - name: Syntax check all Python files
         run: |
           echo "Checking Python syntax..."
