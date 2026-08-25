@@ -52,7 +52,7 @@ The plugin integrates with `privacyflow-public-backend-api`. The public API expo
 
 **PolledMessage**: `{appId, messenger, contactId, messageId, content, timestamp, groupId?, isGroupMessage}`
 
-**SendMessageInput**: `{appId, contactId, message, messenger, groupId?}`
+**SendMessageInput**: `{appId, message, messenger, contactId?, groupId?}` — `contactId` is optional; group delivery is the default target for an app (resolved by the messenger, or supplied as `groupId`), `contactId` is only needed for direct delivery.
 
 No group creation, member management, or app info endpoints. Groups are created in the dashboard. The API is a message relay — poll and send. That's it.
 

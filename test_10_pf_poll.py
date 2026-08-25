@@ -43,7 +43,7 @@ except ImportError:
     sys.modules["requests"] = MagicMock()
 
 sys.path.insert(0, "extensions/python/job_loop")
-from _10_pf_poll import _cleanup_stale_state_mappings  # noqa: E402
+from _10_pf_poll import _cleanup_stale_state_mappings, _format_message_text  # noqa: E402
 
 
 class _StubFiles:
@@ -182,5 +182,37 @@ class TestCleanupStaleStateMappings(unittest.TestCase):
         self.assertEqual(state, {"other": "data"})
 
 
+class TestFormatMessageText(unittest.TestCase):
+    """Tests for _format_message_text() group/direct formatting."""
+
+    def test_group_message_with_contact_id_prefixes_sender(self):
+        result = _format_message_text({
+            "content": "hello group",
+            "isGroupMessage": True,
+            "groupId": "g1",
+            "contactId": "sender-1",
+        })
+        self.assertEqual(result, "[sender-1]: hello group")
+
+    def test_group_message_without_contact_id_keeps_content(self):
+        result = _format_message_text({
+            "content": "hello group",
+            "isGroupMessage": True,
+            "groupId": "g1",
+        })
+        self.assertEqual(result, "hello group")
+
+    def test_direct_message_returns_content(self):
+        result = _format_message_text({
+            "content": "hi",
+            "contactId": "c1",
+        })
+        self.assertEqual(result, "hi")
+
+    def test_missing_content_returns_empty(self):
+        result = _format_message_text({"groupId": "g1"})
+        self.assertEqual(result, "")
+
 if __name__ == "__main__":
     unittest.main()
+

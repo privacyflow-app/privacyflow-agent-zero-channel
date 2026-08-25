@@ -632,10 +632,12 @@ def _start_progress_timer(
 
 
 def _format_message_text(msg: dict) -> str:
-    """Format message text. Prefix group messages with [contactId]."""
+    """Format message text. Prefix group messages with [sender] when known."""
+    content = msg.get("content", "")
     if msg.get("isGroupMessage") and msg.get("groupId"):
-        return f"[{msg['contactId']}]: {msg['content']}"
-    return msg.get("content", "")
+        contact_id = msg.get("contactId")
+        return f"[{contact_id}]: {content}" if contact_id else content
+    return content
 
 
 def _get_dispatch_lock(mapping_key: str) -> asyncio.Lock:
@@ -726,7 +728,7 @@ async def _dispatch_message(msg: dict) -> None:
         group_id = msg.get("groupId")
         messenger = msg.get("messenger", "")
 
-        if not contact_id or not messenger:
+        if not messenger or (not contact_id and not group_id):
             return
 
         mapping_key = group_id if group_id else contact_id
